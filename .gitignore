@@ -1,0 +1,2 @@
+# tpm and tmux plugins are managed by tpm, not this repo
+tmux/.config/tmux/plugins/
