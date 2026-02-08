@@ -1,2 +1,5 @@
 # tpm and tmux plugins are managed by tpm, not this repo
 tmux/.config/tmux/plugins/
+
+# lazy.nvim lockfile is managed by the plugin manager, not this repo
+nvim/.config/nvim/lazy-lock.json
