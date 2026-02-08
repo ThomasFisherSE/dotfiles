@@ -607,14 +607,19 @@ require('lazy').setup({
       --    :Mason
       --
       -- You can press `g?` for help in this menu.
-      local ensure_installed = vim.tbl_keys(servers or {})
-      vim.list_extend(ensure_installed, {
-        'lua_ls', -- Lua Language server
-        'stylua', -- Used to format Lua code
-        'prettier', -- Used to format JS/TS/HTML/CSS
-        'black', -- Used to format Python code
-        'clang-format', -- Used to format C/C++ code
-      })
+      -- Mason package names differ from LSP server names (hyphens vs underscores)
+      local ensure_installed = {
+        'lua-language-server',
+        'rust-analyzer',
+        'pyright',
+        'typescript-language-server',
+        'omnisharp',
+        'clangd',
+        'stylua',
+        'prettier',
+        'black',
+        'clang-format',
+      }
 
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
@@ -719,12 +724,12 @@ require('lazy').setup({
           -- `friendly-snippets` contains a variety of premade snippets.
           --    See the README about individual language/framework/plugin snippets:
           --    https://github.com/rafamadriz/friendly-snippets
-          -- {
-          --   'rafamadriz/friendly-snippets',
-          --   config = function()
-          --     require('luasnip.loaders.from_vscode').lazy_load()
-          --   end,
-          -- },
+          {
+            'rafamadriz/friendly-snippets',
+            config = function()
+              require('luasnip.loaders.from_vscode').lazy_load()
+            end,
+          },
         },
         opts = {},
       },
@@ -811,6 +816,53 @@ require('lazy').setup({
       }
 
       vim.cmd.colorscheme 'catppuccin'
+    end,
+  },
+
+  { -- Neo-tree file browser
+    'nvim-neo-tree/neo-tree.nvim',
+    version = '*',
+    dependencies = {
+      'nvim-lua/plenary.nvim',
+      'nvim-tree/nvim-web-devicons',
+      'MunifTanjim/nui.nvim',
+    },
+    lazy = false,
+    keys = {
+      { '\\', ':Neotree reveal<CR>', desc = 'NeoTree reveal', silent = true },
+    },
+    opts = {
+      filesystem = {
+        window = {
+          mappings = {
+            ['\\'] = 'close_window',
+          },
+        },
+      },
+    },
+  },
+
+  { -- Autopairs: auto-close brackets, quotes, etc.
+    'windwp/nvim-autopairs',
+    event = 'InsertEnter',
+    opts = {},
+  },
+
+  { -- Inline color highlighting for hex, rgb, hsl codes
+    'NvChad/nvim-colorizer.lua',
+    config = function()
+      require('colorizer').setup {
+        filetypes = { '*' },
+        user_default_options = {
+          RGB = true,
+          RRGGBB = true,
+          names = false,
+          RRGGBBAA = true,
+          rgb_fn = true,
+          hsl_fn = true,
+          mode = 'background',
+        },
+      }
     end,
   },
 
