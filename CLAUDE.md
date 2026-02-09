@@ -11,7 +11,8 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 | Package | Target config | Key details |
 |---------|--------------|-------------|
 | `alacritty` | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
-| `bash` | `.bashrc` | eza/fzf/zoxide/starship integrations, yazi wrapper |
+| `bash` | `.bashrc` | eza/fzf/zoxide/starship/atuin integrations, yazi wrapper, fd+fzf |
+| `git` | `.config/git/config` | delta pager (side-by-side diffs), credential helper |
 | `starship` | `.config/starship.toml` | Catppuccin Mocha palette, minimal prompt |
 | `tmux` | `.config/tmux/tmux.conf` | C-a prefix, vim-style nav, tpm plugins |
 | `nvim` | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
@@ -23,7 +24,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 stow <package>
 
 # Stow all packages
-stow alacritty bash nvim starship tmux
+stow alacritty bash git nvim starship tmux
 
 # Unstow (remove symlinks)
 stow -D <package>

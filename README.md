@@ -7,7 +7,8 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 | Package | Config | Highlights |
 |---------|--------|------------|
 | **alacritty** | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
-| **bash** | `.bashrc` | eza, fzf, zoxide, starship, yazi shell wrapper, lazygit alias |
+| **bash** | `.bashrc` | eza, fzf, zoxide, starship, yazi shell wrapper, lazygit alias, fd/fzf integration, atuin |
+| **git** | `.config/git/config` | delta pager (side-by-side diffs, line numbers, navigate mode) |
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
 | **starship** | `.config/starship.toml` | Catppuccin Mocha palette, minimal git-aware prompt |
 | **tmux** | `.config/tmux/tmux.conf` | `C-a` prefix, vim-style navigation, Catppuccin theme, session persistence |
@@ -20,6 +21,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 - [tmux](https://github.com/tmux/tmux) + [tpm](https://github.com/tmux-plugins/tpm)
 - [Starship](https://starship.rs/)
 - [eza](https://github.com/eza-community/eza), [fzf](https://github.com/junegunn/fzf), [zoxide](https://github.com/ajeetdsouza/zoxide), [yazi](https://github.com/sxyazi/yazi), [lazygit](https://github.com/jesseduffield/lazygit)
+- [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [sd](https://github.com/chmln/sd), [dust](https://github.com/bootandy/dust), [procs](https://github.com/dalance/procs), [delta](https://github.com/dandavison/delta), [atuin](https://github.com/atuinsh/atuin), [tealdeer](https://github.com/tealdeer-rs/tealdeer)
 - [JetBrainsMono Nerd Font](https://www.nerdfonts.com/)
 
 ## Usage
@@ -30,7 +32,7 @@ git clone git@github.com:ThomasFisherSE/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 
 # Stow individual packages
-stow alacritty bash nvim starship tmux
+stow alacritty bash git nvim starship tmux
 
 # Remove symlinks for a package
 stow -D <package>

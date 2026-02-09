@@ -35,8 +35,16 @@ function y() {
 # Tool integrations
 # ---------------------------------------------------------------------------
 
-# fzf keybindings and completion (Ctrl+R for history, Ctrl+T for files, Alt+C for cd)
+# fd integration with fzf (faster, respects .gitignore)
+export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+
+# fzf keybindings and completion (Ctrl+T for files, Alt+C for cd)
 eval "$(fzf --bash)"
+
+# Atuin (enhanced shell history — replaces Ctrl+R)
+eval "$(atuin init bash)"
 
 # zoxide (smarter cd — use 'z' instead of 'cd')
 eval "$(zoxide init bash)"
