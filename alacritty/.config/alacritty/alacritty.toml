@@ -2,6 +2,9 @@
 normal = { family = "JetBrainsMono Nerd Font", style = "Regular" }
 size = 12.0
 
+[bell]
+command = { program = "paplay", args = ["/usr/share/sounds/freedesktop/stereo/bell.oga"] }
+
 [[keyboard.bindings]]
 key = "Return"
 mods = "Shift"
