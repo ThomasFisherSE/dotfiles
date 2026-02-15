@@ -907,9 +907,10 @@ require('lazy').setup({
 
   { -- Highlight, edit, and navigate code
     'nvim-treesitter/nvim-treesitter',
+    build = ':TSUpdate',
     config = function()
       local filetypes = { 'bash', 'c', 'cpp', 'c_sharp', 'css', 'diff', 'html', 'javascript', 'json', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'python', 'query', 'rust', 'toml', 'tsx', 'typescript', 'vim', 'vimdoc', 'yaml' }
-      require('nvim-treesitter').install(filetypes)
+      pcall(require('nvim-treesitter').install, filetypes)
       vim.api.nvim_create_autocmd('FileType', {
         pattern = filetypes,
         callback = function() pcall(vim.treesitter.start) end,
