@@ -910,7 +910,11 @@ require('lazy').setup({
     build = ':TSUpdate',
     config = function()
       local filetypes = { 'bash', 'c', 'cpp', 'c_sharp', 'css', 'diff', 'html', 'javascript', 'json', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'python', 'query', 'rust', 'toml', 'tsx', 'typescript', 'vim', 'vimdoc', 'yaml' }
-      pcall(require('nvim-treesitter').install, filetypes)
+      -- Only install parsers if cwd exists on disk (tar extracts to cwd, which
+      -- may be stale after tmux session restore)
+      if vim.uv.fs_stat(vim.fn.getcwd()) then
+        pcall(require('nvim-treesitter').install, filetypes)
+      end
       vim.api.nvim_create_autocmd('FileType', {
         pattern = filetypes,
         callback = function() pcall(vim.treesitter.start) end,
