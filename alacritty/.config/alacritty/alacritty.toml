@@ -5,6 +5,9 @@ size = 12.0
 [bell]
 command = { program = "paplay", args = ["/usr/share/sounds/freedesktop/stereo/bell.oga"] }
 
+[hints]
+enabled = [{ regex = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|nntp:|sftp:|ssh:|telnet:|ftp://)[^\u0000-\u001F\u007F-\u009F<>\"\\s{-}\\^⟨⟩`]+", hyperlinks = true, command = { program = "xdg-open", args = [] }, post_processing = true, mouse = { enabled = true, mods = "Shift" } }]
+
 [[keyboard.bindings]]
 key = "Return"
 mods = "Shift"
