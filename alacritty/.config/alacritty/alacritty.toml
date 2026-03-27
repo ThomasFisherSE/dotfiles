@@ -1,5 +1,8 @@
+[window]
+startup_mode = "Maximized"
+
 [terminal]
-shell = { program = "/usr/bin/tmux", args = ["new-session", "-A", "-s", "main"] }
+shell = { program = "/bin/sh", args = ["-c", "tmux attach || tmux new-session"] }
 
 [font]
 normal = { family = "JetBrainsMono Nerd Font", style = "Regular" }
