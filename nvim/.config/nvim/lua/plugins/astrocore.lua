@@ -22,7 +22,7 @@ return {
     options = {
       opt = {
         number = true,
-        relativenumber = false,
+        relativenumber = true,
         mouse = "a",
         showmode = false,
         clipboard = "unnamedplus",
