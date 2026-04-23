@@ -66,5 +66,22 @@ return {
         },
       },
     },
+    treesitter = {
+      ensure_installed = {
+        "bash",
+        "css",
+        "diff",
+        "html",
+        "json",
+        "luadoc",
+        "markdown",
+        "markdown_inline",
+        "query",
+        "toml",
+        "vim",
+        "vimdoc",
+        "yaml",
+      },
+    },
   },
 }

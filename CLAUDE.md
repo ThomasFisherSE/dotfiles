@@ -15,7 +15,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 | `git` | `.config/git/config` | delta pager (side-by-side diffs), credential helper |
 | `starship` | `.config/starship.toml` | Catppuccin Mocha palette, minimal prompt |
 | `tmux` | `.config/tmux/tmux.conf` | C-a prefix, vim-style nav, tpm plugins |
-| `nvim` | `.config/nvim/` | AstroNvim v5, Catppuccin Mocha, LSP + formatters, modular lua/plugins/ layout |
+| `nvim` | `.config/nvim/` | AstroNvim v6 (requires Neovim 0.12+ and `tree-sitter-cli`), Catppuccin Mocha, LSP + formatters. Uses nvim-treesitter `main` branch; extra parsers go in `astrocore.lua` under `treesitter.ensure_installed`. |
 
 ## Deploying Changes
 
