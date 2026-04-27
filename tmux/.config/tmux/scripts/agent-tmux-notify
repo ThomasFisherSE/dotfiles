@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Mark or clear the tmux window that owns the current agent pane.
+# Usage:
+#   agent-tmux-notify        # mark the agent window as needing attention
+#   agent-tmux-notify clear  # clear the per-window attention style
+# Codex appends a JSON notification payload as argv, so anything other than the
+# explicit local "clear" command should be treated as a mark request.
+case "${1:-mark}" in
+  clear) mode="clear" ;;
+  *) mode="mark" ;;
+esac
+
+if ! command -v tmux >/dev/null 2>&1; then
+  exit 0
+fi
+
+find_tmux_pane() {
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    printf '%s\n' "$TMUX_PANE"
+    return 0
+  fi
+
+  local ancestors=" " pane_id pane_pid parent pid="$$"
+  while [[ -r "/proc/$pid/status" ]]; do
+    ancestors+="$pid "
+    parent="$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || true)"
+    if [[ -z "$parent" || "$parent" == "0" || "$parent" == "$pid" ]]; then
+      break
+    fi
+    pid="$parent"
+  done
+
+  while read -r pane_pid pane_id; do
+    if [[ "$ancestors" == *" $pane_pid "* ]]; then
+      printf '%s\n' "$pane_id"
+      return 0
+    fi
+  done < <(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null || true)
+}
+
+pane_id="$(find_tmux_pane || true)"
+if [[ -z "$pane_id" ]]; then
+  exit 0
+fi
+
+window_id="$(tmux display-message -p -t "$pane_id" "#{window_id}" 2>/dev/null || true)"
+if [[ -z "$window_id" ]]; then
+  exit 0
+fi
+
+if [[ "$mode" == "clear" ]]; then
+  tmux set-window-option -q -t "$window_id" -u window-status-format
+  tmux set-window-option -q -t "$window_id" -u window-status-current-format
+  exit 0
+fi
+
+format_with_attention() {
+  local format="$1"
+  format="${format//\#\{@thm_overlay_2\}/$attention_color}"
+  format="${format//\#\{@thm_mauve\}/$attention_color}"
+  printf '%s\n' "$format"
+}
+
+attention_color="${AGENT_TMUX_NOTIFY_COLOR:-#{@thm_red}}"
+base_format="$(tmux show-option -gqv window-status-format 2>/dev/null || true)"
+if [[ -n "$base_format" ]]; then
+  tmux set-window-option -q -t "$window_id" window-status-format "$(format_with_attention "$base_format")"
+fi
+
+current_base_format="$(tmux show-option -gqv window-status-current-format 2>/dev/null || true)"
+if [[ -n "$current_base_format" ]]; then
+  tmux set-window-option -q -t "$window_id" window-status-current-format "$(format_with_attention "$current_base_format")"
+fi
