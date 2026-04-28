@@ -56,20 +56,16 @@ if [[ "$mode" == "clear" ]]; then
   exit 0
 fi
 
-format_with_attention() {
-  local format="$1"
-  format="${format//\#\{@thm_overlay_2\}/$attention_color}"
-  format="${format//\#\{@thm_mauve\}/$attention_color}"
-  printf '%s\n' "$format"
-}
+# The marker is only useful for windows that are not currently visible.
+if [[ "$(tmux display-message -p -t "$window_id" "#{window_active}" 2>/dev/null || printf '0')" == "1" ]]; then
+  tmux set-window-option -q -t "$window_id" -u window-status-format
+  tmux set-window-option -q -t "$window_id" -u window-status-current-format
+  exit 0
+fi
 
 attention_color="${AGENT_TMUX_NOTIFY_COLOR:-#{@thm_red}}"
 base_format="$(tmux show-option -gqv window-status-format 2>/dev/null || true)"
 if [[ -n "$base_format" ]]; then
-  tmux set-window-option -q -t "$window_id" window-status-format "$(format_with_attention "$base_format")"
-fi
-
-current_base_format="$(tmux show-option -gqv window-status-current-format 2>/dev/null || true)"
-if [[ -n "$current_base_format" ]]; then
-  tmux set-window-option -q -t "$window_id" window-status-current-format "$(format_with_attention "$current_base_format")"
+  tmux set-window-option -q -t "$window_id" window-status-format \
+    "${base_format//\#\{@thm_overlay_2\}/$attention_color}"
 fi
