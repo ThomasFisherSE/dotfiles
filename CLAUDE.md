@@ -11,6 +11,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 | Package | Target config | Key details |
 |---------|--------------|-------------|
 | `alacritty` | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
+| `ghostty` | `.config/ghostty/config` | Alacritty-style visuals, maximized tmux startup, JetBrainsMono Nerd Font, Shift+Enter binding |
 | `bash` | `.bashrc` | eza/fzf/zoxide/starship/atuin integrations, yazi wrapper, fd+fzf |
 | `git` | `.config/git/config` | delta pager (side-by-side diffs), credential helper |
 | `starship` | `.config/starship.toml` | Catppuccin Mocha palette, minimal prompt |
@@ -24,7 +25,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 stow <package>
 
 # Stow all packages
-stow alacritty bash git nvim starship tmux
+stow alacritty bash git ghostty nvim starship tmux
 
 # Unstow (remove symlinks)
 stow -D <package>
@@ -37,7 +38,7 @@ Alacritty and Starship hot-reload on config change. Bash requires `source ~/.bas
 
 ## Key Conventions
 
-- **Theme**: Catppuccin Mocha everywhere (tmux, starship). New configs should match.
+- **Theme**: Catppuccin Mocha for tmux and starship. Terminal emulator configs stay visually minimal unless explicitly themed.
 - **Stow structure**: Each package mirrors `$HOME` directory layout. A file at `tmux/.config/tmux/tmux.conf` symlinks to `~/.config/tmux/tmux.conf`.
 - **Plugins are gitignored**: tmux plugins live in `tmux/.config/tmux/plugins/` but are managed by tpm, not this repo. Install them with `prefix + I` inside tmux.
 - **Special characters**: The tmux config contains Nerd Font glyphs (powerline separators U+E0B4, U+E0B6). Use raw byte writes (`printf '\xee\x82\xb4'`) rather than the Edit tool for these characters, as they may get stripped.

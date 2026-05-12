@@ -7,6 +7,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 | Package | Config | Highlights |
 |---------|--------|------------|
 | **alacritty** | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
+| **ghostty** | `.config/ghostty/config` | Alacritty-style visuals, maximized tmux startup, JetBrainsMono Nerd Font, Shift+Enter binding |
 | **bash** | `.bashrc` | eza, fzf, zoxide, starship, yazi shell wrapper, lazygit alias, fd/fzf integration, atuin |
 | **git** | `.config/git/config` | delta pager (side-by-side diffs, line numbers, navigate mode) |
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
@@ -16,7 +17,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 ## Dependencies
 
 - [GNU Stow](https://www.gnu.org/software/stow/)
-- [Alacritty](https://alacritty.org/)
+- [Alacritty](https://alacritty.org/) or [Ghostty](https://ghostty.org/)
 - [Neovim](https://neovim.io/)
 - [tmux](https://github.com/tmux/tmux) + [tpm](https://github.com/tmux-plugins/tpm)
 - [Starship](https://starship.rs/)
@@ -32,7 +33,7 @@ git clone git@github.com:ThomasFisherSE/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 
 # Stow individual packages
-stow alacritty bash git nvim starship tmux
+stow alacritty bash git ghostty nvim starship tmux
 
 # Remove symlinks for a package
 stow -D <package>
@@ -42,7 +43,7 @@ After stowing tmux, install plugins inside a tmux session with `prefix + I`.
 
 ## Reloading Configs
 
-- **Alacritty / Starship** — hot-reload on save
+- **Alacritty / Ghostty / Starship** — hot-reload on save
 - **Bash** — `source ~/.bashrc` or open a new shell
 - **tmux** — `prefix + r` or `tmux source-file ~/.config/tmux/tmux.conf`
 - **Neovim** — restart nvim

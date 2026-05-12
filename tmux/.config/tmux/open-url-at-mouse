@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+hyperlink=
+word=
+line=
+mouse_x=
+pane_left=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --hyperlink=*) hyperlink=${arg#--hyperlink=} ;;
+    --word=*) word=${arg#--word=} ;;
+    --line=*) line=${arg#--line=} ;;
+    --mouse-x=*) mouse_x=${arg#--mouse-x=} ;;
+    --pane-left=*) pane_left=${arg#--pane-left=} ;;
+  esac
+done
+
+url_re='(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|nntp:|sftp://|ssh://|telnet://|ftp://)[^[:space:]<>"{}^`]+'
+
+trim_url() {
+  local url=$1
+  local last
+
+  while ((${#url} > 0)); do
+    last=${url: -1}
+    case "$last" in
+      ')'|']'|'}'|'>'|'"'|"'"|'.'|','|':'|';'|'!'|'?')
+        url=${url:0:${#url}-1}
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  printf '%s' "$url"
+}
+
+open_uri() {
+  local url
+  url=$(trim_url "$1")
+
+  [[ -n "$url" ]] || return 1
+  [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*: ]] || return 1
+
+  if ! command -v xdg-open >/dev/null 2>&1; then
+    tmux display-message "xdg-open not found"
+    exit 1
+  fi
+
+  xdg-open "$url" >/dev/null 2>&1 &
+  exit 0
+}
+
+open_known_url() {
+  local url
+  url=$(trim_url "$1")
+
+  [[ "$url" =~ ^$url_re$ ]] || return 1
+  open_uri "$url"
+}
+
+# OSC 8 hyperlinks are explicit links, so allow any URI scheme there.
+open_uri "$hyperlink" || true
+open_known_url "$word" || true
+
+candidate=$(
+  awk \
+    -v line="$line" \
+    -v word="$word" \
+    -v mouse_x="$mouse_x" \
+    -v pane_left="$pane_left" \
+    -v regex="$url_re" '
+      BEGIN {
+        have_x = mouse_x ~ /^[0-9]+$/
+        x_global = mouse_x + 0
+        x_local = x_global - (pane_left + 0)
+        rest = line
+        base = 0
+        count = 0
+        best = ""
+        best_score = 1000000
+
+        while (match(rest, regex)) {
+          url = substr(rest, RSTART, RLENGTH)
+          start = base + RSTART - 1
+          end = start + RLENGTH
+          count++
+
+          score = 10000 + count
+          if (have_x && ((x_global >= start && x_global < end) || (x_local >= start && x_local < end))) {
+            score = count
+          } else if (word != "" && index(url, word) > 0) {
+            score = 100 + count
+          } else if (count == 1) {
+            score = 1000
+          }
+
+          if (score < best_score) {
+            best = url
+            best_score = score
+          }
+
+          base += RSTART + RLENGTH - 1
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+
+        if (best != "") {
+          print best
+        }
+      }
+    '
+)
+
+open_known_url "$candidate" || true

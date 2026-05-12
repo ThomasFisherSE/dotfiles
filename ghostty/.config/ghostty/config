@@ -1,0 +1,18 @@
+# Match the Alacritty workflow: open maximized and attach to tmux.
+maximize = true
+command = shell:tmux attach || tmux new-session
+
+font-family = JetBrainsMono Nerd Font
+font-size = 12
+
+# Alacritty does not set an app-level color theme in this repo, so leave
+# Ghostty's terminal palette at its default too.
+window-padding-x = 0
+window-padding-y = 0
+gtk-titlebar = false
+
+bell-features = no-system,audio,attention,title
+bell-audio-path = /usr/share/sounds/freedesktop/stereo/bell.oga
+
+# Keep Shift+Enter behavior aligned with the Alacritty CSI-u binding.
+keybind = shift+enter=csi:13;2u
