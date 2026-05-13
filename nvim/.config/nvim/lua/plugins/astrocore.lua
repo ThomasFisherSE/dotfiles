@@ -47,10 +47,21 @@ return {
       n = {
         -- Clear search highlights
         ["<Esc>"] = { "<cmd>nohlsearch<CR>", desc = "Clear search highlights" },
+        -- Familiar desktop-editor aliases. Native Vim motions remain available.
+        ["<C-z>"] = { "u", desc = "Undo" },
+        ["<C-y>"] = { "<C-r>", desc = "Redo" },
         -- Neo-tree toggle with backslash
         ["\\"] = { "<cmd>Neotree toggle<CR>", desc = "Toggle Neo-tree" },
         -- Diagnostics quickfix
         ["<Leader>q"] = { vim.diagnostic.setloclist, desc = "Quickfix diagnostics" },
+      },
+      i = {
+        ["<C-z>"] = { "<C-g>u<C-o>u", desc = "Undo" },
+        ["<C-y>"] = { "<C-o><C-r>", desc = "Redo" },
+      },
+      v = {
+        ["<C-z>"] = { "<Esc>u", desc = "Undo" },
+        ["<C-y>"] = { "<Esc><C-r>", desc = "Redo" },
       },
       t = {
         -- Exit terminal mode
@@ -62,7 +73,9 @@ return {
         {
           event = "TextYankPost",
           desc = "Highlight when yanking text",
-          callback = function() vim.hl.on_yank() end,
+          callback = function()
+            vim.hl.on_yank()
+          end,
         },
       },
     },
