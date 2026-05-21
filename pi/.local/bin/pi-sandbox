@@ -5,7 +5,10 @@ PROJECT="$(realpath "$PWD")"
 PI_HOME="$HOME/.pi/agent"
 SANDBOX_HOME="/home/sandbox"
 DOTFILES_DIR="$HOME/dotfiles"
-HOST_BROKER_SCRIPT="$DOTFILES_DIR/scripts/pi-host-broker"
+HOST_BROKER_SCRIPT="${PI_HOST_BROKER_SCRIPT:-$HOME/.local/bin/pi-host-broker}"
+if [[ ! -x "$HOST_BROKER_SCRIPT" && -x "$DOTFILES_DIR/pi/.local/bin/pi-host-broker" ]]; then
+  HOST_BROKER_SCRIPT="$DOTFILES_DIR/pi/.local/bin/pi-host-broker"
+fi
 HOST_BROKER_SOCKET="${PI_HOST_BROKER_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pi-host-broker-$$.sock}"
 SANDBOX_GITCONFIG="$PI_HOME/gitconfig"
 BROKER_PID=""
@@ -20,11 +23,7 @@ trap cleanup EXIT
 
 mkdir -p "$PI_HOME"
 
-# Keep pi-sandbox extensions installed from dotfiles.
-if [[ -d "$DOTFILES_DIR/pi/extensions" ]]; then
-  mkdir -p "$PI_HOME/extensions"
-  cp "$DOTFILES_DIR"/pi/extensions/*.ts "$PI_HOME/extensions/" 2>/dev/null || true
-fi
+# Pi extensions are installed by stow from pi/.pi/agent/extensions into ~/.pi/agent/extensions.
 
 # Provide only the host's Git author identity inside the sandbox. Avoid binding the
 # full ~/.gitconfig because it may include credential helpers, signing keys, or includes.

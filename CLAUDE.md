@@ -17,6 +17,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 | `starship` | `.config/starship.toml` | Catppuccin Mocha palette, minimal prompt |
 | `tmux` | `.config/tmux/tmux.conf` | C-a prefix, vim-style nav, tpm plugins |
 | `nvim` | `.config/nvim/` | AstroNvim v6 (requires Neovim 0.12+ and `tree-sitter-cli`), Catppuccin Mocha, LSP + formatters. Uses nvim-treesitter `main` branch; extra parsers go in `astrocore.lua` under `treesitter.ensure_installed`. |
+| `pi` | `.pi/agent/extensions/`, `.local/bin/pi-*` | Pi sandbox launcher, host broker, and extensions. |
 
 ## Deploying Changes
 
@@ -25,7 +26,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 stow <package>
 
 # Stow all packages
-stow alacritty bash git ghostty nvim starship tmux
+stow alacritty bash git ghostty nvim pi starship tmux
 
 # Unstow (remove symlinks)
 stow -D <package>
