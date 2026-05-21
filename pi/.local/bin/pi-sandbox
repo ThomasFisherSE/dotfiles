@@ -2,6 +2,13 @@
 set -euo pipefail
 
 PROJECT="$(realpath "$PWD")"
+if [[ "$PROJECT" == "$HOME" ]]; then
+  PROJECT_DISPLAY="~"
+elif [[ "$PROJECT" == "$HOME"/* ]]; then
+  PROJECT_DISPLAY="~/${PROJECT#"$HOME"/}"
+else
+  PROJECT_DISPLAY="$PROJECT"
+fi
 PI_HOME="$HOME/.pi/agent"
 SANDBOX_HOME="/home/sandbox"
 DOTFILES_DIR="$HOME/dotfiles"
@@ -68,6 +75,8 @@ args=(
   # Keep the sandbox focused on the current project.
   --bind "$PROJECT" /workspace
   --bind "$PI_HOME" "$SANDBOX_HOME/.pi/agent"
+  --dir "$SANDBOX_HOME/dotfiles"
+  --ro-bind "$DOTFILES_DIR" "$SANDBOX_HOME/dotfiles"
   --ro-bind "$HOME/.agents" "$SANDBOX_HOME/.agents"
   --dir "$SANDBOX_HOME/.codex"
   --dir "$SANDBOX_HOME/.claude"
@@ -87,6 +96,9 @@ args=(
   --setenv USER sandbox
   --setenv PATH /usr/local/sbin:/usr/local/bin:/usr/bin:/bin
   --setenv TERM "${TERM:-xterm-256color}"
+  --setenv PI_SANDBOX 1
+  --setenv PI_SANDBOX_HOST_PROJECT "$PROJECT"
+  --setenv PI_SANDBOX_HOST_PROJECT_DISPLAY "$PROJECT_DISPLAY"
 )
 
 # Expose only the host broker socket, not the host filesystem.
