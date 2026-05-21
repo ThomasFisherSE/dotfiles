@@ -1,8 +1,9 @@
 # tpm and tmux plugins are managed by tpm, not this repo
 tmux/.config/tmux/plugins/
 
-# Codex CLI local workspace marker/state file
+# Agent/CLI local workspace state and permissions
 /.codex
+/.claude/
 
 # lazy.nvim lockfile is managed by the plugin manager, not this repo
 nvim/.config/nvim/lazy-lock.json

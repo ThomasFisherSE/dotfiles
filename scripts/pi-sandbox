@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="$(realpath "$PWD")"
+PI_HOME="$HOME/.pi/agent"
+SANDBOX_HOME="/home/sandbox"
+DOTFILES_DIR="$HOME/dotfiles"
+HOST_BROKER_SCRIPT="$DOTFILES_DIR/scripts/pi-host-broker"
+HOST_BROKER_SOCKET="${PI_HOST_BROKER_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pi-host-broker-$$.sock}"
+SANDBOX_GITCONFIG="$PI_HOME/gitconfig"
+BROKER_PID=""
+
+cleanup() {
+  if [[ -n "$BROKER_PID" ]]; then
+    kill "$BROKER_PID" >/dev/null 2>&1 || true
+  fi
+  rm -f "$HOST_BROKER_SOCKET"
+}
+trap cleanup EXIT
+
+mkdir -p "$PI_HOME"
+
+# Keep pi-sandbox extensions installed from dotfiles.
+if [[ -d "$DOTFILES_DIR/pi/extensions" ]]; then
+  mkdir -p "$PI_HOME/extensions"
+  cp "$DOTFILES_DIR"/pi/extensions/*.ts "$PI_HOME/extensions/" 2>/dev/null || true
+fi
+
+# Provide only the host's Git author identity inside the sandbox. Avoid binding the
+# full ~/.gitconfig because it may include credential helpers, signing keys, or includes.
+HOST_GIT_NAME="$(git config --global --includes --get user.name 2>/dev/null || true)"
+HOST_GIT_EMAIL="$(git config --global --includes --get user.email 2>/dev/null || true)"
+if [[ -n "$HOST_GIT_NAME" && -n "$HOST_GIT_EMAIL" ]]; then
+  rm -f "$SANDBOX_GITCONFIG"
+  git config --file "$SANDBOX_GITCONFIG" user.name "$HOST_GIT_NAME"
+  git config --file "$SANDBOX_GITCONFIG" user.email "$HOST_GIT_EMAIL"
+  chmod 600 "$SANDBOX_GITCONFIG"
+else
+  rm -f "$SANDBOX_GITCONFIG"
+fi
+
+# Start a per-pi-sandbox host broker outside the sandbox. The sandbox only sees its Unix socket.
+# Per-session sockets keep terminal approvals attached to the terminal that launched this Pi.
+if [[ -x "$HOST_BROKER_SCRIPT" ]]; then
+  mkdir -p "$(dirname "$HOST_BROKER_SOCKET")"
+  env PI_HOST_BROKER_SOCKET="$HOST_BROKER_SOCKET" "$HOST_BROKER_SCRIPT" start \
+    >"${XDG_RUNTIME_DIR:-/tmp}/pi-host-broker-$$.log" 2>&1 &
+  BROKER_PID="$!"
+  for _ in {1..20}; do
+    PI_HOST_BROKER_SOCKET="$HOST_BROKER_SOCKET" "$HOST_BROKER_SCRIPT" ping >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+fi
+
+args=(
+  --die-with-parent
+  --unshare-all
+  --share-net
+
+  # Basic runtime environment.
+  --dev-bind /dev /dev
+  --proc /proc
+  --tmpfs /tmp
+  --tmpfs /home
+  --dir /run
+  --dir "$SANDBOX_HOME"
+  --dir "$SANDBOX_HOME/.pi"
+
+  # Keep the sandbox focused on the current project.
+  --bind "$PROJECT" /workspace
+  --bind "$PI_HOME" "$SANDBOX_HOME/.pi/agent"
+  --ro-bind "$HOME/.agents" "$SANDBOX_HOME/.agents"
+  --dir "$SANDBOX_HOME/.codex"
+  --dir "$SANDBOX_HOME/.claude"
+  --ro-bind "$HOME/.codex/skills" "$SANDBOX_HOME/.codex/skills"
+  --ro-bind "$HOME/.claude/skills" "$SANDBOX_HOME/.claude/skills"
+  --chdir /workspace
+
+  # System files/binaries, read-only.
+  --ro-bind /usr /usr
+  --ro-bind /bin /bin
+  --ro-bind /lib /lib
+  --ro-bind /etc /etc
+  --ro-bind /opt /opt
+
+  # Minimal environment.
+  --setenv HOME "$SANDBOX_HOME"
+  --setenv USER sandbox
+  --setenv PATH /usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+  --setenv TERM "${TERM:-xterm-256color}"
+)
+
+# Expose only the host broker socket, not the host filesystem.
+if [[ -S "$HOST_BROKER_SOCKET" ]]; then
+  args+=(--bind "$HOST_BROKER_SOCKET" /run/pi-host-broker.sock)
+  args+=(--setenv PI_HOST_BROKER_SOCKET /run/pi-host-broker.sock)
+fi
+
+# Make commits work in fresh repos without exposing the host's full Git config.
+if [[ -f "$SANDBOX_GITCONFIG" ]]; then
+  args+=(--ro-bind "$SANDBOX_GITCONFIG" "$SANDBOX_HOME/.gitconfig")
+fi
+
+# Forward the SSH agent socket when available. This enables git push/fetch and
+# SSH commit signing without exposing ~/.ssh private key files to the sandbox.
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+  args+=(--bind "$SSH_AUTH_SOCK" /run/ssh-agent.sock)
+  args+=(--setenv SSH_AUTH_SOCK /run/ssh-agent.sock)
+fi
+
+# Arch commonly has /lib64, but only bind it if present.
+if [[ -e /lib64 ]]; then
+  args+=(--ro-bind /lib64 /lib64)
+fi
+
+# On many Arch systems /etc/resolv.conf points into /run/systemd/resolve.
+# Bind that target so DNS works inside the sandbox.
+if [[ -e /run/systemd/resolve ]]; then
+  args+=(--ro-bind /run/systemd/resolve /run/systemd/resolve)
+fi
+
+# Pass through common provider/API environment variables when present.
+for name in \
+  ANTHROPIC_API_KEY \
+  OPENAI_API_KEY \
+  AZURE_OPENAI_API_KEY \
+  AZURE_OPENAI_BASE_URL \
+  AZURE_OPENAI_RESOURCE_NAME \
+  AZURE_OPENAI_API_VERSION \
+  AZURE_OPENAI_DEPLOYMENT_NAME_MAP \
+  DEEPSEEK_API_KEY \
+  GEMINI_API_KEY \
+  GOOGLE_CLOUD_PROJECT \
+  GOOGLE_CLOUD_LOCATION \
+  GOOGLE_APPLICATION_CREDENTIALS \
+  MISTRAL_API_KEY \
+  GROQ_API_KEY \
+  CEREBRAS_API_KEY \
+  CLOUDFLARE_API_KEY \
+  CLOUDFLARE_ACCOUNT_ID \
+  CLOUDFLARE_GATEWAY_ID \
+  XAI_API_KEY \
+  OPENROUTER_API_KEY \
+  AI_GATEWAY_API_KEY \
+  ZAI_API_KEY \
+  OPENCODE_API_KEY \
+  HF_TOKEN \
+  FIREWORKS_API_KEY \
+  TOGETHER_API_KEY \
+  KIMI_API_KEY \
+  MINIMAX_API_KEY \
+  MINIMAX_CN_API_KEY \
+  XIAOMI_API_KEY \
+  XIAOMI_TOKEN_PLAN_CN_API_KEY \
+  XIAOMI_TOKEN_PLAN_AMS_API_KEY \
+  XIAOMI_TOKEN_PLAN_SGP_API_KEY \
+  AWS_PROFILE \
+  AWS_ACCESS_KEY_ID \
+  AWS_SECRET_ACCESS_KEY \
+  AWS_SESSION_TOKEN \
+  AWS_REGION \
+  AWS_DEFAULT_REGION \
+  AWS_BEARER_TOKEN_BEDROCK \
+  AWS_ENDPOINT_URL_BEDROCK_RUNTIME \
+  AWS_BEDROCK_SKIP_AUTH \
+  AWS_BEDROCK_FORCE_HTTP1 \
+  AWS_BEDROCK_FORCE_CACHE \
+  PI_OFFLINE \
+  PI_SKIP_VERSION_CHECK \
+  PI_TELEMETRY \
+  PI_CACHE_RETENTION
+ do
+  if [[ -v "$name" ]]; then
+    args+=(--setenv "$name" "${!name}")
+  fi
+done
+
+bwrap "${args[@]}" /usr/bin/pi "$@"
