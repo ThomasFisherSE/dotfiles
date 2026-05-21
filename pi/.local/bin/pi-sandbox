@@ -17,6 +17,8 @@ if [[ ! -x "$HOST_BROKER_SCRIPT" && -x "$DOTFILES_DIR/pi/.local/bin/pi-host-brok
   HOST_BROKER_SCRIPT="$DOTFILES_DIR/pi/.local/bin/pi-host-broker"
 fi
 HOST_BROKER_SOCKET="${PI_HOST_BROKER_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pi-host-broker-$$.sock}"
+OBSIDIAN_VAULT="${PI_OBSIDIAN_VAULT:-$HOME/dev/obsidian}"
+SANDBOX_OBSIDIAN_VAULT="$SANDBOX_HOME/dev/obsidian"
 SANDBOX_GITCONFIG="$PI_HOME/gitconfig"
 BROKER_PID=""
 
@@ -71,6 +73,7 @@ args=(
   --dir /run
   --dir "$SANDBOX_HOME"
   --dir "$SANDBOX_HOME/.pi"
+  --dir "$SANDBOX_HOME/dev"
 
   # Keep the sandbox focused on the current project.
   --bind "$PROJECT" /workspace
@@ -100,6 +103,13 @@ args=(
   --setenv PI_SANDBOX_HOST_PROJECT "$PROJECT"
   --setenv PI_SANDBOX_HOST_PROJECT_DISPLAY "$PROJECT_DISPLAY"
 )
+
+# Keep the Obsidian vault available in every sandbox session, independent of
+# the current project. Override with PI_OBSIDIAN_VAULT=/path/to/vault.
+if [[ -d "$OBSIDIAN_VAULT" ]]; then
+  args+=(--bind "$OBSIDIAN_VAULT" "$SANDBOX_OBSIDIAN_VAULT")
+  args+=(--setenv PI_OBSIDIAN_VAULT "$SANDBOX_OBSIDIAN_VAULT")
+fi
 
 # Expose only the host broker socket, not the host filesystem.
 if [[ -S "$HOST_BROKER_SOCKET" ]]; then
