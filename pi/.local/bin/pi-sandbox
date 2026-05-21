@@ -97,7 +97,7 @@ args=(
   # Minimal environment.
   --setenv HOME "$SANDBOX_HOME"
   --setenv USER sandbox
-  --setenv PATH /usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+  --setenv PATH "$SANDBOX_HOME/.pi/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
   --setenv TERM "${TERM:-xterm-256color}"
   --setenv PI_SANDBOX 1
   --setenv PI_SANDBOX_HOST_PROJECT "$PROJECT"

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_PI="${PI_REAL_BIN:-/usr/bin/pi}"
+SANDBOX_PI="${PI_SANDBOX_BIN:-$HOME/.local/bin/pi-sandbox}"
+
+if [[ ! -x "$REAL_PI" ]]; then
+  echo "pi: real Pi binary not found or not executable at $REAL_PI" >&2
+  exit 127
+fi
+
+# Inside an existing Pi sandbox, run the real binary directly instead of trying
+# to nest bubblewrap sandboxes.
+if [[ "${PI_SANDBOX:-}" == "1" ]]; then
+  exec "$REAL_PI" "$@"
+fi
+
+args=()
+no_sandbox=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-sandbox)
+      no_sandbox=1
+      ;;
+    *)
+      args+=("$arg")
+      ;;
+  esac
+done
+
+if (( no_sandbox )); then
+  exec "$REAL_PI" "${args[@]}"
+fi
+
+if [[ ! -x "$SANDBOX_PI" ]]; then
+  echo "pi: sandbox launcher not found or not executable at $SANDBOX_PI" >&2
+  echo "pi: use 'pi --no-sandbox' to run $REAL_PI directly" >&2
+  exit 127
+fi
+
+exec "$SANDBOX_PI" "$@"

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BROKER="${PI_HOST_BROKER_CLIENT:-$HOME/dotfiles/pi/.local/bin/pi-host-broker}"
+
+# In the Pi sandbox, make ordinary `stow ...` affect the host dotfiles/home via
+# the restricted host broker. This keeps agent instructions identical to normal
+# dotfiles usage while avoiding broad host filesystem access.
+if [[ "${PI_SANDBOX:-}" == "1" && -S "${PI_HOST_BROKER_SOCKET:-}" && -x "$BROKER" ]]; then
+  exec "$BROKER" stow "$@"
+fi
+
+exec /usr/bin/stow "$@"

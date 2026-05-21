@@ -158,6 +158,36 @@ function writeFile(req) {
   return { path: p, bytes: Buffer.byteLength(req.content, 'utf8'), backupPath, policy };
 }
 
+function stowDotfiles(req) {
+  const dotfiles = path.join(HOME, 'dotfiles');
+  const args = req.args;
+  if (!Array.isArray(args) || args.length === 0) throw new Error('stow args must be a non-empty array');
+
+  const allowedOptions = new Set(['-D', '--delete', '-R', '--restow', '-n', '--no', '--simulate', '-v', '--verbose']);
+  const packages = [];
+  for (const arg of args) {
+    if (typeof arg !== 'string' || arg.length === 0) throw new Error('invalid empty stow argument');
+    if (arg.startsWith('-')) {
+      if (!allowedOptions.has(arg)) throw new Error(`stow option not allowed by host broker: ${arg}`);
+      continue;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(arg)) throw new Error(`invalid package name: ${arg}`);
+    const packagePath = path.join(dotfiles, arg);
+    const realPackagePath = resolveExisting(packagePath);
+    if (!isSubpath(realPackagePath, dotfiles) || !fs.statSync(realPackagePath).isDirectory()) {
+      throw new Error(`not a dotfiles package: ${arg}`);
+    }
+    packages.push(arg);
+  }
+  if (packages.length === 0) throw new Error('stow requires at least one dotfiles package');
+  if (!hasCommand('stow')) throw new Error('stow not found on host');
+  const result = spawnSync('stow', args, { cwd: dotfiles, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`stow failed with status ${result.status}\n${result.stderr || result.stdout || ''}`.trim());
+  }
+  return { dotfiles, args, packages, stdout: result.stdout, stderr: result.stderr };
+}
+
 function handle(req) {
   if (!req || typeof req !== 'object') throw new Error('request must be an object');
   if (req.action === 'ping') return { pong: true, socket: SOCKET, home: HOME };
@@ -169,6 +199,7 @@ function handle(req) {
   if (req.action === 'read_file') return readFile(req);
   if (req.action === 'list_dir') return listDir(req);
   if (req.action === 'write_file') return writeFile(req);
+  if (req.action === 'stow_dotfiles') return stowDotfiles(req);
   throw new Error(`unknown action: ${req.action}`);
 }
 
@@ -212,7 +243,20 @@ function request(req) {
 const cmd = process.argv[2] || 'start';
 if (cmd === 'start') start();
 else if (cmd === 'ping') request({ action: 'ping' }).then((r) => { console.log(JSON.stringify(r)); process.exit(r.ok ? 0 : 1); }, () => process.exit(1));
+else if (cmd === 'stow') {
+  const args = process.argv.slice(3);
+  request({ action: 'stow_dotfiles', args }).then((r) => {
+    if (!r.ok) {
+      console.error(r.error || 'stow failed');
+      process.exit(1);
+    }
+    const result = r.result || {};
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.error(`pi-host-broker: ran host stow ${(result.args || args).join(' ')}`);
+  }, (err) => { console.error(err?.message || String(err)); process.exit(1); });
+}
 else {
-  console.error(`Usage: ${path.basename(process.argv[1])} [start|ping]`);
+  console.error(`Usage: ${path.basename(process.argv[1])} [start|ping|stow <package>...]`);
   process.exit(2);
 }

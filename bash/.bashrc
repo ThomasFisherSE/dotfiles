@@ -9,6 +9,9 @@
 # Aliases
 # ---------------------------------------------------------------------------
 
+# Route `pi` through our wrapper: sandbox by default, `--no-sandbox` to bypass.
+alias pi="$HOME/.local/bin/pi"
+
 # Use eza instead of ls (better output, git integration)
 alias ls='eza --group-directories-first'
 alias ll='eza -la --group-directories-first --git'
