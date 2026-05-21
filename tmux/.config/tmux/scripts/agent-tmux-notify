@@ -5,11 +5,31 @@ set -euo pipefail
 # Usage:
 #   agent-tmux-notify        # mark the agent window as needing attention
 #   agent-tmux-notify clear  # clear the per-window attention style
-# Codex appends a JSON notification payload as argv, so anything other than the
-# explicit local "clear" command should be treated as a mark request.
+# Codex appends a JSON notification payload as argv. Only completion payloads
+# should mark the window; other notification types are not actionable.
 case "${1:-mark}" in
-  clear) mode="clear" ;;
-  *) mode="mark" ;;
+  clear)
+    mode="clear"
+    ;;
+  "" | mark)
+    mode="mark"
+    ;;
+  \{*)
+    if command -v jq >/dev/null 2>&1; then
+      notification_type="$(jq -r '.type // empty' <<<"$1" 2>/dev/null || true)"
+    elif [[ "$1" =~ \"type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+      notification_type="${BASH_REMATCH[1]}"
+    else
+      notification_type=""
+    fi
+    case "$notification_type" in
+      agent-turn-complete | turn/completed) mode="mark" ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  *)
+    mode="mark"
+    ;;
 esac
 
 if ! command -v tmux >/dev/null 2>&1; then
