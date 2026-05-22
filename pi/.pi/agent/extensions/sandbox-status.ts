@@ -2,10 +2,18 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-function sandboxLabel() {
+function projectLabel(cwd: string) {
   const display = process.env.PI_SANDBOX_HOST_PROJECT_DISPLAY || process.env.PI_SANDBOX_HOST_PROJECT;
-  if (!display) return undefined;
-  return display;
+  if (display) return display;
+
+  const home = process.env.HOME;
+  if (home && cwd === home) return "~";
+  if (home && cwd.startsWith(`${home}/`)) return `~/${cwd.slice(home.length + 1)}`;
+  return cwd;
+}
+
+function isSandboxed() {
+  return process.env.PI_SANDBOX === "1";
 }
 
 function formatTokens(n: number) {
@@ -54,8 +62,8 @@ function joinPills(parts: string[]) {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
-    const label = sandboxLabel();
-    if (!label) return;
+    const label = projectLabel(ctx.cwd);
+    const sandboxed = isSandboxed();
 
     ctx.ui.setTitle(`pi - ${label}`);
     ctx.ui.setFooter((tui, theme, footerData) => {
@@ -81,7 +89,9 @@ export default function (pi: ExtensionAPI) {
           const left = joinPills([
             pill(theme, "customMessageBg", "customMessageLabel", `󰉋 ${label}`),
             branch ? pill(theme, "selectedBg", "muted", ` ${branch}`) : "",
-            pill(theme, "toolSuccessBg", "success", ` Sandboxed ✓`),
+            sandboxed
+              ? pill(theme, "toolSuccessBg", "success", ` Sandboxed ✓`)
+              : pill(theme, "toolErrorBg", "warning", ` Not Sandboxed ✗`),
           ]);
 
           const usage = ctx.getContextUsage();
