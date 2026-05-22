@@ -22,8 +22,10 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 
 ## Deploying Changes
 
+Agents should deploy dotfile changes themselves when it is safe to do so. After editing files in a stow package, run the matching `stow <package>` command from the repository root unless the user explicitly asks not to deploy.
+
 ```bash
-# Stow a single package (from ~/dotfiles)
+# Stow a single package (from ~/dotfiles or this repository root)
 stow <package>
 
 # Stow all packages
@@ -36,7 +38,7 @@ stow -D <package>
 tmux source-file ~/.config/tmux/tmux.conf
 ```
 
-Alacritty and Starship hot-reload on config change. Bash requires `source ~/.bashrc` or a new shell.
+For Pi changes, agents should usually run `stow pi` after editing `pi/.pi/...` or `pi/.local/...`, then tell the user to run `/reload` or restart Pi if needed. Alacritty and Starship hot-reload on config change. Bash requires `source ~/.bashrc` or a new shell.
 
 ## Key Conventions
 
