@@ -5,7 +5,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 function sandboxLabel() {
   const display = process.env.PI_SANDBOX_HOST_PROJECT_DISPLAY || process.env.PI_SANDBOX_HOST_PROJECT;
   if (!display) return undefined;
-  return `${display} [Sandbox]`;
+  return display;
 }
 
 function formatTokens(n: number) {
@@ -79,8 +79,9 @@ export default function (pi: ExtensionAPI) {
 
           const branch = footerData.getGitBranch();
           const left = joinPills([
-            pill(theme, "customMessageBg", "customMessageLabel", label),
-            branch ? pill(theme, "selectedBg", "muted", branch) : "",
+            pill(theme, "customMessageBg", "customMessageLabel", `󰉋 ${label}`),
+            branch ? pill(theme, "selectedBg", "muted", ` ${branch}`) : "",
+            pill(theme, "toolSuccessBg", "success", ` Sandboxed ✓`),
           ]);
 
           const usage = ctx.getContextUsage();
@@ -93,10 +94,10 @@ export default function (pi: ExtensionAPI) {
               : "Context: ?";
           const model = ctx.model?.id || "no-model";
           const right = joinPills([
-            pill(theme, "toolPendingBg", "accent", context),
-            pill(theme, "toolSuccessBg", "success", `↑${formatTokens(input)} ↓${formatTokens(output)}`),
-            pill(theme, "toolErrorBg", "warning", `$${cost.toFixed(3)}`),
-            pill(theme, "selectedBg", "text", model),
+            pill(theme, "toolPendingBg", "accent", `󰍛 ${context}`),
+            pill(theme, "toolSuccessBg", "success", `󰆦 ↑${formatTokens(input)} ↓${formatTokens(output)}`),
+            pill(theme, "toolErrorBg", "warning", ` ${cost.toFixed(3)}`),
+            pill(theme, "selectedBg", "text", `󰚩 ${model}`),
           ]);
 
           const pad = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
