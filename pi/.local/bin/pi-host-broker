@@ -5,11 +5,12 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const HOME = os.homedir();
 const SOCKET = process.env.PI_HOST_BROKER_SOCKET || path.join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`, 'pi-host-broker.sock');
 const MAX_READ_BYTES = Number(process.env.PI_HOST_BROKER_MAX_READ_BYTES || 1024 * 1024);
+const MAX_IMAGE_BYTES = Number(process.env.PI_HOST_BROKER_MAX_IMAGE_BYTES || 20 * 1024 * 1024);
 
 const autoReadDirs = (process.env.PI_HOST_BROKER_AUTO_READ_DIRS || '~/dev:~/Projects:~/dotfiles')
   .split(':')
@@ -70,6 +71,9 @@ function classify(op, resolvedPath) {
   for (const root of blocked) {
     if (isSubpath(resolvedPath, root)) return { decision: 'deny', reason: `blocked sensitive path: ${root}` };
   }
+  if (op === 'read_file' && path.dirname(resolvedPath) === '/tmp' && /^pi-clipboard-[A-Za-z0-9-]+\.(png|jpe?g|gif|webp)$/i.test(path.basename(resolvedPath))) {
+    return { decision: 'allow', reason: 'Pi clipboard image temp file' };
+  }
   if (op === 'read_file' || op === 'list_dir') {
     for (const root of autoReadDirs) {
       if (fs.existsSync(root) && isSubpath(resolvedPath, fs.realpathSync.native(root))) {
@@ -126,6 +130,26 @@ function readFile(req) {
   return { path: p, content: data.toString('utf8'), bytes: data.length, policy };
 }
 
+function imageMimeType(p) {
+  const ext = path.extname(p).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.webp') return 'image/webp';
+  throw new Error(`Unsupported image extension: ${ext || '(none)'}`);
+}
+
+function readImage(req) {
+  const p = resolveExisting(req.path);
+  const policy = requirePermission('read_file', p, !!req.approved);
+  const st = fs.statSync(p);
+  if (!st.isFile()) throw new Error('Not a file');
+  const maxBytes = Math.min(Number(req.maxBytes || MAX_IMAGE_BYTES), MAX_IMAGE_BYTES);
+  if (st.size > maxBytes) throw new Error(`Image too large (${st.size} bytes > ${maxBytes} byte limit)`);
+  const data = fs.readFileSync(p);
+  return { path: p, data: data.toString('base64'), mimeType: imageMimeType(p), bytes: data.length, policy };
+}
+
 function listDir(req) {
   const p = resolveExisting(req.path);
   const policy = requirePermission('list_dir', p, !!req.approved);
@@ -156,6 +180,158 @@ function writeFile(req) {
   }
   fs.writeFileSync(p, req.content, 'utf8');
   return { path: p, bytes: Buffer.byteLength(req.content, 'utf8'), backupPath, policy };
+}
+
+function previewImagePopup(req) {
+  const images = Array.isArray(req.images) && req.images.length > 0
+    ? req.images
+    : [{ data: req.data, mimeType: req.mimeType, label: req.label }];
+  for (const image of images) {
+    if (typeof image.data !== 'string') throw new Error('image data must be base64 string');
+    const mimeType = String(image.mimeType || 'image/png');
+    if (mimeType !== 'image/png') throw new Error('tmux preview currently supports PNG only');
+  }
+  if (!process.env.TMUX) throw new Error('Not running under tmux');
+  if (!hasCommand('tmux')) throw new Error('tmux not found on host');
+
+  const id = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const dir = path.join(os.tmpdir(), `pi-image-popup-${id}`);
+  fs.mkdirSync(dir, { mode: 0o700 });
+  const imagePaths = images.map((image, index) => {
+    const p = path.join(dir, `image-${index + 1}.png`);
+    fs.writeFileSync(p, Buffer.from(image.data, 'base64'), { mode: 0o600 });
+    return p;
+  });
+  const captionedPaths = imagePaths.map((imagePath, index) => {
+    const captionPath = path.join(dir, `captioned-${index + 1}.png`);
+    const image = images[index] || {};
+    const title = String(image.label || `Image ${index + 1}`);
+    const pathText = image.path ? String(image.path) : '';
+    if (hasCommand('magick')) {
+      const caption = pathText ? `${title}\n${pathText}` : title;
+      const captionResult = spawnSync('magick', [
+        imagePath,
+        '-gravity', 'northwest',
+        '-background', '#1e1e1e',
+        '-fill', 'white',
+        '-splice', '0x52',
+        '-pointsize', '20',
+        '-annotate', '+8+8', caption,
+        captionPath,
+      ], { encoding: 'utf8' });
+      if (captionResult.status === 0) return captionPath;
+    }
+    return imagePath;
+  });
+  const imagePath = path.join(dir, 'preview.png');
+  const scriptPath = path.join(dir, 'show.sh');
+
+  const cols = Math.max(20, Math.min(Number(req.cols || 80), 160));
+  const rows = Math.max(5, Math.min(Number(req.rows || 30), 60));
+  // kitty icat --use-window-size wants: cells_w,cells_h,pixels_w,pixels_h.
+  // Use plausible cell pixel dimensions; giving pixels=cells makes the image
+  // render absurdly tiny/invisible in some terminals.
+  const pixelWidth = Math.max(320, cols * 10);
+  const pixelHeight = Math.max(240, rows * 20);
+  const label = String(req.label || (images.length === 1 ? (images[0].label || 'Pi image preview') : `Pi image preview (${images.length} images)`));
+  if (captionedPaths.length === 1) {
+    fs.copyFileSync(captionedPaths[0], imagePath);
+  } else if (hasCommand('magick')) {
+    const slotWidth = Math.max(120, Math.floor(pixelWidth / captionedPaths.length));
+    const montage = spawnSync('magick', [
+      'montage',
+      ...captionedPaths,
+      '-thumbnail', `${slotWidth}x${pixelHeight}`,
+      '-tile', `${captionedPaths.length}x1`,
+      '-geometry', '+8+0',
+      imagePath,
+    ], { encoding: 'utf8' });
+    if (montage.status !== 0) throw new Error(`magick montage failed: ${montage.stderr || montage.stdout || montage.status}`);
+  } else {
+    fs.copyFileSync(captionedPaths[0], imagePath);
+  }
+  const wait = req.wait !== false;
+
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+cleanup() {
+  node <<'NODE' || true
+function tmuxPassthrough(sequence) {
+  return '\\x1bPtmux;' + sequence.replaceAll('\\x1b', '\\x1b\\x1b') + '\\x1b\\\\';
+}
+process.stdout.write(tmuxPassthrough('\\x1b_Ga=d,d=A\\x1b\\\\'));
+NODE
+  rm -rf ${JSON.stringify(dir)}
+}
+trap cleanup EXIT
+clear
+printf '%s\\n\\n' ${JSON.stringify(label)}
+if command -v kitty >/dev/null 2>&1; then
+  # Normal tmux panes handle Ghostty/Kitty graphics better than tmux popups.
+  kitty +kitten icat --transfer-mode=stream --passthrough=tmux --align=left --scale-up=no ${JSON.stringify(imagePath)} || true
+else
+  node <<'NODE'
+const fs = require('node:fs');
+const data = fs.readFileSync(${JSON.stringify(imagePath)}).toString('base64');
+const cols = ${JSON.stringify(cols)};
+const rows = ${JSON.stringify(rows)};
+function kittyEscape(data, cols, rows) {
+  const esc = '\\x1b';
+  const st = '\\x1b\\\\';
+  let output = '';
+  const chunkSize = 4096;
+  for (let offset = 0; offset < data.length; offset += chunkSize) {
+    const chunk = data.slice(offset, offset + chunkSize);
+    const more = offset + chunkSize < data.length ? 1 : 0;
+    const prefix = offset === 0 ? esc + '_Ga=T,f=100,q=2,c=' + cols + ',r=' + rows + ',m=' + more + ';' : esc + '_Gm=' + more + ';';
+    output += prefix + chunk + st;
+  }
+  return output;
+}
+function tmuxPassthrough(sequence) {
+  return '\\x1bPtmux;' + sequence.replaceAll('\\x1b', '\\x1b\\x1b') + '\\x1b\\\\';
+}
+process.stdout.write(tmuxPassthrough(kittyEscape(data, cols, rows)) + '\\n'.repeat(rows));
+NODE
+fi
+if ${wait ? 'true' : 'false'}; then
+  printf '\\nPress any key to close preview...'
+  IFS= read -rsn1 _ || true
+else
+  while :; do sleep 3600; done
+fi
+`;
+  fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+
+  const targetPane = spawnSync('tmux', ['display-message', '-p', '#{pane_id}'], { encoding: 'utf8' }).stdout.trim();
+  const result = spawnSync('tmux', ['split-window', '-d', '-b', '-v', '-l', '40%', '-P', '-F', '#{pane_id}', scriptPath], {
+    encoding: 'utf8',
+    env: process.env,
+  });
+  if (result.status !== 0) throw new Error(`tmux split-window failed: ${result.stderr || result.stdout || result.status}`);
+  if (targetPane) spawnSync('tmux', ['select-pane', '-t', targetPane], { stdio: 'ignore' });
+  return { started: true, paneId: result.stdout.trim(), scriptPath };
+}
+
+function closePreviewPane(req) {
+  const paneId = String(req.paneId || '');
+  if (!/^%\d+$/.test(paneId)) throw new Error('invalid tmux pane id');
+  spawnSync('tmux', ['kill-pane', '-t', paneId], { stdio: 'ignore' });
+  return { closed: true, paneId };
+}
+
+function balancePreviewPanes(req) {
+  const panes = Array.isArray(req.paneIds) ? req.paneIds.map(String).filter((p) => /^%\d+$/.test(p)) : [];
+  if (panes.length <= 1) return { balanced: true, panes };
+  const widthText = spawnSync('tmux', ['display-message', '-p', '-t', panes[0], '#{window_width}'], { encoding: 'utf8' }).stdout.trim();
+  const windowWidth = Number(widthText) || 120;
+  const paneWidth = Math.max(10, Math.floor((windowWidth - panes.length + 1) / panes.length));
+  // The preview panes form the top row. Resizing each pane by width keeps them
+  // approximately equal without changing the lower Pi pane height.
+  for (const pane of panes) {
+    spawnSync('tmux', ['resize-pane', '-t', pane, '-x', String(paneWidth)], { stdio: 'ignore' });
+  }
+  return { balanced: true, panes, paneWidth };
 }
 
 function stowDotfiles(req) {
@@ -197,8 +373,12 @@ function handle(req) {
     return { path: p, policy: classify(op, p) };
   }
   if (req.action === 'read_file') return readFile(req);
+  if (req.action === 'read_image') return readImage(req);
   if (req.action === 'list_dir') return listDir(req);
   if (req.action === 'write_file') return writeFile(req);
+  if (req.action === 'preview_image_popup') return previewImagePopup(req);
+  if (req.action === 'close_preview_pane') return closePreviewPane(req);
+  if (req.action === 'balance_preview_panes') return balancePreviewPanes(req);
   if (req.action === 'stow_dotfiles') return stowDotfiles(req);
   throw new Error(`unknown action: ${req.action}`);
 }
