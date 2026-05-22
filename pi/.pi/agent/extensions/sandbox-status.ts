@@ -27,6 +27,31 @@ function formatPercent(percent: number | null | undefined): string {
   return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
 }
 
+type PillBg = "selectedBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" | "customMessageBg" | "userMessageBg";
+
+const fallbackEdgeColors: Record<PillBg, string> = {
+  selectedBg: "\x1b[38;2;69;71;90m",
+  toolPendingBg: "\x1b[38;2;30;30;46m",
+  toolSuccessBg: "\x1b[38;2;30;46;30m",
+  toolErrorBg: "\x1b[38;2;46;30;30m",
+  customMessageBg: "\x1b[38;2;49;50;68m",
+  userMessageBg: "\x1b[38;2;49;50;68m",
+};
+
+function edge(theme: any, bg: PillBg, char: string) {
+  const bgAnsi = theme.bgColors?.get?.(bg);
+  const fgAnsi = typeof bgAnsi === "string" ? bgAnsi.replace("[48;", "[38;").replace("[48:", "[38:") : fallbackEdgeColors[bg];
+  return `${fgAnsi}${char}\x1b[0m`;
+}
+
+function pill(theme: any, bg: PillBg, fg: string, text: string) {
+  return edge(theme, bg, "") + theme.bg(bg, theme.fg(fg, ` ${text} `)) + edge(theme, bg, "");
+}
+
+function joinPills(parts: string[]) {
+  return parts.filter(Boolean).join(" ");
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const label = sandboxLabel();
@@ -53,19 +78,27 @@ export default function (pi: ExtensionAPI) {
           }
 
           const branch = footerData.getGitBranch();
-          const left = theme.fg("dim", `${label}${branch ? ` (${branch})` : ""}`);
+          const left = joinPills([
+            pill(theme, "customMessageBg", "customMessageLabel", label),
+            branch ? pill(theme, "selectedBg", "muted", branch) : "",
+          ]);
+
           const usage = ctx.getContextUsage();
           const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
           const percent = usage?.percent ?? (usage && contextWindow ? (usage.tokens / contextWindow) * 100 : undefined);
           const context = usage
-            ? `Context: ${formatStatusTokens(usage.tokens)} (${formatPercent(percent)})`
+            ? `Context: ${formatStatusTokens(usage.tokens)} ${formatPercent(percent)}`
             : contextWindow
-              ? `Context: ? / ${formatStatusTokens(contextWindow)}`
+              ? `Context: ?/${formatStatusTokens(contextWindow)}`
               : "Context: ?";
-          const right = theme.fg(
-            "dim",
-            `${context} ↑${formatTokens(input)} ↓${formatTokens(output)} $${cost.toFixed(3)} ${ctx.model?.id || "no-model"}`,
-          );
+          const model = ctx.model?.id || "no-model";
+          const right = joinPills([
+            pill(theme, "toolPendingBg", "accent", context),
+            pill(theme, "toolSuccessBg", "success", `↑${formatTokens(input)} ↓${formatTokens(output)}`),
+            pill(theme, "toolErrorBg", "warning", `$${cost.toFixed(3)}`),
+            pill(theme, "selectedBg", "text", model),
+          ]);
+
           const pad = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
           return [truncateToWidth(left + pad + right, width)];
         },
