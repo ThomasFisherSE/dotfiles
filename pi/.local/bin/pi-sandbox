@@ -20,6 +20,10 @@ HOST_BROKER_SOCKET="${PI_HOST_BROKER_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -
 OBSIDIAN_VAULT="${PI_OBSIDIAN_VAULT:-$HOME/dev/obsidian}"
 SANDBOX_OBSIDIAN_VAULT="$SANDBOX_HOME/dev/obsidian"
 SANDBOX_GITCONFIG="$PI_HOME/gitconfig"
+HOST_UID="$(id -u)"
+HOST_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$HOST_UID}"
+SANDBOX_RUNTIME_DIR="/run/user/$HOST_UID"
+GUI_RUNTIME_DIR_ADDED=0
 BROKER_PID=""
 
 cleanup() {
@@ -60,6 +64,28 @@ if [[ -x "$HOST_BROKER_SCRIPT" ]]; then
   done
 fi
 
+ensure_gui_runtime_dir() {
+  if (( GUI_RUNTIME_DIR_ADDED )); then
+    return
+  fi
+  args+=(--dir /run/user)
+  args+=(--dir "$SANDBOX_RUNTIME_DIR")
+  args+=(--setenv XDG_RUNTIME_DIR "$SANDBOX_RUNTIME_DIR")
+  GUI_RUNTIME_DIR_ADDED=1
+}
+
+bind_runtime_socket() {
+  local name="$1"
+  local host_path="$HOST_RUNTIME_DIR/$name"
+  local sandbox_path="$SANDBOX_RUNTIME_DIR/$name"
+  if [[ -S "$host_path" ]]; then
+    ensure_gui_runtime_dir
+    args+=(--bind "$host_path" "$sandbox_path")
+    return 0
+  fi
+  return 1
+}
+
 args=(
   --die-with-parent
   --unshare-all
@@ -93,6 +119,7 @@ args=(
   --ro-bind /lib /lib
   --ro-bind /etc /etc
   --ro-bind /opt /opt
+  --ro-bind /sys /sys
 
   # Minimal environment.
   --setenv HOME "$SANDBOX_HOME"
@@ -117,6 +144,57 @@ if [[ -S "$HOST_BROKER_SOCKET" ]]; then
   args+=(--setenv PI_HOST_BROKER_SOCKET /run/pi-host-broker.sock)
 fi
 
+# Optional desktop/GPU display integration. /dev is already bound above, which
+# exposes GPU device nodes. These socket binds let GUI/GPU clients talk to the
+# host Wayland/X11/session services without mounting the whole host runtime dir.
+# Set PI_SANDBOX_GUI=0 to disable this bridge for a session.
+if [[ "${PI_SANDBOX_GUI:-1}" != "0" ]]; then
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    if [[ "$WAYLAND_DISPLAY" = /* && -S "$WAYLAND_DISPLAY" ]]; then
+      ensure_gui_runtime_dir
+      args+=(--bind "$WAYLAND_DISPLAY" "$WAYLAND_DISPLAY")
+      args+=(--setenv WAYLAND_DISPLAY "$WAYLAND_DISPLAY")
+    elif bind_runtime_socket "$WAYLAND_DISPLAY"; then
+      args+=(--setenv WAYLAND_DISPLAY "$WAYLAND_DISPLAY")
+    fi
+  fi
+
+  if [[ -n "${DISPLAY:-}" ]]; then
+    args+=(--setenv DISPLAY "$DISPLAY")
+    if [[ -d /tmp/.X11-unix ]]; then
+      args+=(--bind /tmp/.X11-unix /tmp/.X11-unix)
+    fi
+    HOST_XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+    if [[ -f "$HOST_XAUTHORITY" ]]; then
+      args+=(--ro-bind "$HOST_XAUTHORITY" /run/pi-Xauthority)
+      args+=(--setenv XAUTHORITY /run/pi-Xauthority)
+    fi
+  fi
+
+  if [[ "${DBUS_SESSION_BUS_ADDRESS:-}" =~ ^unix:path=([^,]+) ]]; then
+    DBUS_HOST_PATH="${BASH_REMATCH[1]}"
+    if [[ -S "$DBUS_HOST_PATH" ]]; then
+      ensure_gui_runtime_dir
+      DBUS_SANDBOX_PATH="$SANDBOX_RUNTIME_DIR/$(basename "$DBUS_HOST_PATH")"
+      args+=(--bind "$DBUS_HOST_PATH" "$DBUS_SANDBOX_PATH")
+      args+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$DBUS_SANDBOX_PATH")
+    fi
+  elif bind_runtime_socket bus; then
+    args+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$SANDBOX_RUNTIME_DIR/bus")
+  fi
+
+  # Audio/media sockets are useful for browser previews, game prototypes, and
+  # VA-API/PipeWire capture tests. Bind only the conventional socket paths.
+  bind_runtime_socket pipewire-0 >/dev/null || true
+  bind_runtime_socket pipewire-0-manager >/dev/null || true
+  if [[ -S "$HOST_RUNTIME_DIR/pulse/native" ]]; then
+    ensure_gui_runtime_dir
+    args+=(--dir "$SANDBOX_RUNTIME_DIR/pulse")
+    args+=(--bind "$HOST_RUNTIME_DIR/pulse/native" "$SANDBOX_RUNTIME_DIR/pulse/native")
+    args+=(--setenv PULSE_SERVER "unix:$SANDBOX_RUNTIME_DIR/pulse/native")
+  fi
+fi
+
 # Make commits work in fresh repos without exposing the host's full Git config.
 if [[ -f "$SANDBOX_GITCONFIG" ]]; then
   args+=(--ro-bind "$SANDBOX_GITCONFIG" "$SANDBOX_HOME/.gitconfig")
@@ -132,6 +210,11 @@ fi
 # Arch commonly has /lib64, but only bind it if present.
 if [[ -e /lib64 ]]; then
   args+=(--ro-bind /lib64 /lib64)
+fi
+
+# GPU/user-space drivers commonly consult udev metadata for device discovery.
+if [[ -e /run/udev ]]; then
+  args+=(--ro-bind /run/udev /run/udev)
 fi
 
 # On many Arch systems /etc/resolv.conf points into /run/systemd/resolve.
@@ -189,7 +272,12 @@ for name in \
   PI_OFFLINE \
   PI_SKIP_VERSION_CHECK \
   PI_TELEMETRY \
-  PI_CACHE_RETENTION
+  PI_CACHE_RETENTION \
+  XDG_CURRENT_DESKTOP \
+  DESKTOP_SESSION \
+  KDE_FULL_SESSION \
+  QT_QPA_PLATFORM \
+  GDK_BACKEND
  do
   if [[ -v "$name" ]]; then
     args+=(--setenv "$name" "${!name}")
