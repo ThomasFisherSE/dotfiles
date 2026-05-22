@@ -9,9 +9,22 @@ function sandboxLabel() {
 }
 
 function formatTokens(n: number) {
-  if (n < 1000) return `${n}`;
+  if (!Number.isFinite(n)) return "?";
+  if (n < 1000) return `${Math.round(n)}`;
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
   return `${(n / 1_000_000).toFixed(1)}m`;
+}
+
+function formatStatusTokens(n: number) {
+  if (!Number.isFinite(n)) return "?";
+  if (n < 1000) return `${Math.round(n)}`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}m`;
+}
+
+function formatPercent(percent: number | null | undefined): string {
+  if (percent === null || percent === undefined || !Number.isFinite(percent)) return "?";
+  return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -41,9 +54,17 @@ export default function (pi: ExtensionAPI) {
 
           const branch = footerData.getGitBranch();
           const left = theme.fg("dim", `${label}${branch ? ` (${branch})` : ""}`);
+          const usage = ctx.getContextUsage();
+          const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
+          const percent = usage?.percent ?? (usage && contextWindow ? (usage.tokens / contextWindow) * 100 : undefined);
+          const context = usage
+            ? `Context: ${formatStatusTokens(usage.tokens)} (${formatPercent(percent)})`
+            : contextWindow
+              ? `Context: ? / ${formatStatusTokens(contextWindow)}`
+              : "Context: ?";
           const right = theme.fg(
             "dim",
-            `↑${formatTokens(input)} ↓${formatTokens(output)} $${cost.toFixed(3)} ${ctx.model?.id || "no-model"}`,
+            `${context} ↑${formatTokens(input)} ↓${formatTokens(output)} $${cost.toFixed(3)} ${ctx.model?.id || "no-model"}`,
           );
           const pad = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
           return [truncateToWidth(left + pad + right, width)];
