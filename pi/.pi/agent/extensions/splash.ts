@@ -11,8 +11,13 @@ type Theme = {
 };
 
 const widgetId = "pi-splash";
+const shimmerDelayMs = 500;
+const shimmerDurationMs = 900;
+const shimmerFrameCount = 96;
+const shimmerIntervalMs = 33;
 let showing = false;
 let animationTimer: ReturnType<typeof setInterval> | undefined;
+let animationStartedAt = 0;
 
 function projectLabel(cwd: string) {
   const display = process.env.PI_SANDBOX_HOST_PROJECT_DISPLAY || process.env.PI_SANDBOX_HOST_PROJECT;
@@ -187,7 +192,13 @@ function showSplash(pi: ExtensionAPI, ctx: any) {
     widgetId,
     (tui: any, theme: Theme) => {
       stopAnimation();
-      animationTimer = setInterval(() => tui.requestRender(), 90);
+      animationStartedAt = Date.now();
+      animationTimer = setInterval(() => {
+        if (Date.now() - animationStartedAt >= shimmerDelayMs + shimmerDurationMs) {
+          stopAnimation();
+        }
+        tui.requestRender();
+      }, shimmerIntervalMs);
 
       return {
         invalidate() {},
@@ -199,7 +210,13 @@ function showSplash(pi: ExtensionAPI, ctx: any) {
           const model = ctx.model?.id ? theme.fg("accent", ctx.model.id) : theme.fg("dim", "model pending");
 
           const title = theme.fg("accent", theme.bold("π")) + theme.fg("text", "  coding agent");
-          const piArt = shimmerPi(theme, Math.floor(Date.now() / 85));
+          const elapsed = animationTimer ? Date.now() - animationStartedAt : 0;
+          const shimmerElapsed = Math.max(0, elapsed - shimmerDelayMs);
+          const frame = Math.min(
+            shimmerFrameCount - 1,
+            Math.floor((shimmerElapsed / shimmerDurationMs) * shimmerFrameCount),
+          );
+          const piArt = shimmerPi(theme, frame);
           const meta = [
             metric(theme, "customMessageLabel", "repo", project),
             metric(theme, isSandboxed() ? "success" : "warning", "mode", sandbox),
@@ -254,6 +271,14 @@ function hideSplash(ctx: any) {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     if (event.reason === "reload") return;
+
+    // Only show the startup splash before there are real transcript messages.
+    // Starting Pi via resume still uses reason === "startup", but a restored
+    // session already has message entries; showing a live widget there can sit
+    // underneath the resume UI and cause redraw artifacts. Some fresh sessions
+    // can still have non-message bookkeeping entries, so don't check length.
+    if (ctx.sessionManager.getBranch().some((entry: any) => entry.type === "message")) return;
+
     showSplash(pi, ctx);
   });
 
@@ -262,11 +287,12 @@ export default function (pi: ExtensionAPI) {
     return { action: "continue" as const };
   });
 
-  pi.registerCommand("splash", {
-    description: "Show the Pi startup splash widget",
-    handler: async (_args, ctx) => {
-      showSplash(pi, ctx);
-    },
+  pi.on("session_before_switch", async (_event, ctx) => {
+    hideSplash(ctx);
+  });
+
+  pi.on("session_before_fork", async (_event, ctx) => {
+    hideSplash(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
