@@ -1,0 +1,16 @@
+{
+  "lastChangelogVersion": "0.75.4",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "medium",
+  "images": {
+    "blockImages": false
+  },
+  "terminal": {
+    "showTerminalProgress": false,
+    "showImages": true,
+    "imageWidthCells": 60
+  },
+  "steeringMode": "one-at-a-time",
+  "quietStartup": true
+}

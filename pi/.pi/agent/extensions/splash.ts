@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -44,6 +46,86 @@ function line(theme: Theme, width: number, text = "") {
   const content = truncateToWidth(text, innerWidth);
   const pad = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
   return theme.fg("borderMuted", "│ ") + content + pad + theme.fg("borderMuted", " │");
+}
+
+function version() {
+  try {
+    return JSON.parse(fs.readFileSync("/opt/pi-coding-agent/package.json", "utf8")).version as string;
+  } catch {
+    return "unknown";
+  }
+}
+
+function namesFromDir(dir: string, kind: "skills" | "extensions") {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      if (entry.name.startsWith(".")) return [];
+      if (kind === "extensions") {
+        if (entry.isFile() && entry.name.endsWith(".ts")) return [entry.name];
+        if (entry.isDirectory() && fs.existsSync(path.join(dir, entry.name, "index.ts"))) return [entry.name];
+        return [];
+      }
+      if (entry.isDirectory() && fs.existsSync(path.join(dir, entry.name, "SKILL.md"))) return [entry.name];
+      return [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function wrapItems(items: string[], innerWidth: number, indent = "  ") {
+  const sorted = [...new Set(items)].sort((a, b) => a.localeCompare(b));
+  if (sorted.length === 0) return [`${indent}none loaded`];
+
+  const lines: string[] = [];
+  let current = indent;
+
+  for (const item of sorted) {
+    const suffix = current.trimEnd() === indent.trimEnd() ? item : `, ${item}`;
+    if (visibleWidth(current + suffix) > innerWidth && current !== indent) {
+      lines.push(current);
+      current = indent + item;
+    } else {
+      current += suffix;
+    }
+  }
+
+  lines.push(current);
+  return lines;
+}
+
+function section(theme: Theme, title: string, items: string[], innerWidth: number) {
+  return [
+    theme.fg("customMessageLabel", theme.bold(title)),
+    ...wrapItems(items, innerWidth).map((text) => theme.fg("dim", text)),
+  ];
+}
+
+function contextFiles(cwd: string) {
+  const files: string[] = [];
+  const global = path.join(os.homedir(), ".pi", "agent", "AGENTS.md");
+  if (fs.existsSync(global)) files.push("~/.pi/agent/AGENTS.md");
+  if (fs.existsSync(path.join(cwd, "AGENTS.md"))) files.push("AGENTS.md");
+  return files;
+}
+
+function skillNames(pi: ExtensionAPI) {
+  const commandSkills = pi.getCommands()
+    .filter((command) => command.source === "skill")
+    .map((command) => command.name.replace(/^skill:/, ""));
+  if (commandSkills.length > 0) return commandSkills;
+
+  return [
+    ...namesFromDir(path.join(os.homedir(), ".agents", "skills"), "skills"),
+    ...namesFromDir(path.join(os.homedir(), ".codex", "skills"), "skills"),
+  ];
+}
+
+function extensionNames(cwd: string) {
+  return [
+    ...namesFromDir(path.join(os.homedir(), ".pi", "agent", "extensions"), "extensions"),
+    ...namesFromDir(path.join(cwd, ".pi", "extensions"), "extensions"),
+  ];
 }
 
 function border(theme: Theme, width: number, kind: "top" | "bottom") {
@@ -97,7 +179,7 @@ function stopAnimation() {
   animationTimer = undefined;
 }
 
-function showSplash(ctx: any) {
+function showSplash(pi: ExtensionAPI, ctx: any) {
   if (!ctx.hasUI) return;
   showing = true;
 
@@ -110,14 +192,14 @@ function showSplash(ctx: any) {
       return {
         invalidate() {},
         render(width: number): string[] {
-          const w = Math.max(28, Math.min(width, 88));
+          const w = Math.max(28, width);
           const project = shortProjectName(ctx.cwd);
           const sandbox = isSandboxed() ? theme.fg("success", "sandboxed ✓") : theme.fg("warning", "host-ish ✗");
           const vault = process.env.PI_OBSIDIAN_VAULT ? theme.fg("success", "vault mounted") : theme.fg("dim", "no vault");
           const model = ctx.model?.id ? theme.fg("accent", ctx.model.id) : theme.fg("dim", "model pending");
 
           const title = theme.fg("accent", theme.bold("π")) + theme.fg("text", "  coding agent");
-          const pi = shimmerPi(theme, Math.floor(Date.now() / 85));
+          const piArt = shimmerPi(theme, Math.floor(Date.now() / 85));
           const meta = [
             metric(theme, "customMessageLabel", "repo", project),
             metric(theme, isSandboxed() ? "success" : "warning", "mode", sandbox),
@@ -126,16 +208,32 @@ function showSplash(ctx: any) {
           ].join(theme.fg("borderMuted", "  ┊  "));
 
           const hint = theme.fg("dim", "type a prompt to begin");
+          const innerWidth = w - 4;
+          const startupLines = [
+            center(theme.fg("accent", `pi v${version()}`), innerWidth),
+            center(theme.fg("dim", "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more"), innerWidth),
+            center(theme.fg("dim", "Press ctrl+o to show full startup help and loaded resources."), innerWidth),
+            "",
+            center(theme.fg("dim", "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi."), innerWidth),
+            "",
+            ...section(theme, "Context", contextFiles(ctx.cwd), innerWidth),
+            "",
+            ...section(theme, "Skills", skillNames(pi), innerWidth),
+            "",
+            ...section(theme, "Extensions", extensionNames(ctx.cwd), innerWidth),
+          ];
 
           return [
             border(theme, w, "top"),
             line(theme, w, ""),
-            line(theme, w, center(title, w - 4)),
+            line(theme, w, center(title, innerWidth)),
             line(theme, w, ""),
-            ...pi.map((piLine) => line(theme, w, center(piLine, w - 4))),
+            ...piArt.map((piLine) => line(theme, w, center(piLine, innerWidth))),
             line(theme, w, ""),
-            line(theme, w, center(meta, w - 4)),
-            line(theme, w, center(hint, w - 4)),
+            line(theme, w, center(meta, innerWidth)),
+            line(theme, w, center(hint, innerWidth)),
+            line(theme, w, ""),
+            ...startupLines.map((text) => line(theme, w, text)),
             line(theme, w, ""),
             border(theme, w, "bottom"),
           ];
@@ -156,7 +254,7 @@ function hideSplash(ctx: any) {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     if (event.reason === "reload") return;
-    showSplash(ctx);
+    showSplash(pi, ctx);
   });
 
   pi.on("input", async (_event, ctx) => {
@@ -167,7 +265,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("splash", {
     description: "Show the Pi startup splash widget",
     handler: async (_args, ctx) => {
-      showSplash(ctx);
+      showSplash(pi, ctx);
     },
   });
 
