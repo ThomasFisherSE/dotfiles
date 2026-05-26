@@ -55,6 +55,8 @@ Install or refresh the package after cloning/restoring the extension checkout:
 scripts/install-pi-local-web.sh
 ```
 
+If `~/dev/pi-local-web` is missing, the script clones `git@github.com:ThomasFisherSE/pi-local-web.git` first. Override with `PI_LOCAL_WEB_REPO_URL` or `PI_LOCAL_WEB_REPO` if needed.
+
 For search, run or point at a SearXNG instance:
 
 ```bash

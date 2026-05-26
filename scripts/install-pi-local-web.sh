@@ -2,16 +2,12 @@
 set -euo pipefail
 
 repo="${PI_LOCAL_WEB_REPO:-$HOME/dev/pi-local-web}"
+repo_url="${PI_LOCAL_WEB_REPO_URL:-git@github.com:ThomasFisherSE/pi-local-web.git}"
 real_pi="${PI_REAL_BIN:-/usr/bin/pi}"
 
 if [[ ! -d "$repo" ]]; then
-  cat >&2 <<EOF
-pi-local-web checkout not found:
-  $repo
-
-Set PI_LOCAL_WEB_REPO=/path/to/pi-local-web or clone/create it there first.
-EOF
-  exit 1
+  mkdir -p "$(dirname "$repo")"
+  git clone "$repo_url" "$repo"
 fi
 
 if [[ ! -x "$real_pi" ]]; then
