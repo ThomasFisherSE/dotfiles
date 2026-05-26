@@ -19,12 +19,19 @@ fi
 HOST_BROKER_SOCKET="${PI_HOST_BROKER_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pi-host-broker-$$.sock}"
 OBSIDIAN_VAULT="${PI_OBSIDIAN_VAULT:-$HOME/dev/obsidian}"
 SANDBOX_OBSIDIAN_VAULT="$SANDBOX_HOME/dev/obsidian"
+PI_LOCAL_WEB_REPO="${PI_LOCAL_WEB_REPO:-$HOME/dev/pi-local-web}"
+SANDBOX_PI_LOCAL_WEB_REPO="$SANDBOX_HOME/dev/pi-local-web"
 SANDBOX_GITCONFIG="$PI_HOME/gitconfig"
 HOST_UID="$(id -u)"
 HOST_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$HOST_UID}"
 SANDBOX_RUNTIME_DIR="/run/user/$HOST_UID"
 GUI_RUNTIME_DIR_ADDED=0
 BROKER_PID=""
+
+# Default local web search endpoint for pi-local-web. Shells that do not read
+# ~/.bashrc, such as fish/tmux panes, should still get the local SearXNG URL.
+SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+PI_LOCAL_WEB_SEARXNG_URL="${PI_LOCAL_WEB_SEARXNG_URL:-http://127.0.0.1:$SEARXNG_PORT}"
 
 cleanup() {
   if [[ -n "$BROKER_PID" ]]; then
@@ -136,6 +143,13 @@ args=(
 if [[ -d "$OBSIDIAN_VAULT" ]]; then
   args+=(--bind "$OBSIDIAN_VAULT" "$SANDBOX_OBSIDIAN_VAULT")
   args+=(--setenv PI_OBSIDIAN_VAULT "$SANDBOX_OBSIDIAN_VAULT")
+fi
+
+# The pi-local-web package is installed in settings.json as ../../dev/pi-local-web
+# relative to ~/.pi/agent, so expose the checkout at that same sandbox path.
+if [[ -d "$PI_LOCAL_WEB_REPO" ]]; then
+  args+=(--ro-bind "$PI_LOCAL_WEB_REPO" "$SANDBOX_PI_LOCAL_WEB_REPO")
+  args+=(--setenv PI_LOCAL_WEB_REPO "$SANDBOX_PI_LOCAL_WEB_REPO")
 fi
 
 # Expose only the host broker socket, not the host filesystem.
@@ -273,6 +287,8 @@ for name in \
   PI_SKIP_VERSION_CHECK \
   PI_TELEMETRY \
   PI_CACHE_RETENTION \
+  PI_LOCAL_WEB_SEARXNG_URL \
+  SEARXNG_URL \
   TERM_PROGRAM \
   TERM_PROGRAM_VERSION \
   COLORTERM \

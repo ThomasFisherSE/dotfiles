@@ -12,5 +12,8 @@
     "imageWidthCells": 60
   },
   "steeringMode": "one-at-a-time",
-  "quietStartup": true
+  "quietStartup": true,
+  "packages": [
+    "../../dev/pi-local-web"
+  ]
 }

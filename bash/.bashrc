@@ -38,6 +38,10 @@ function y() {
 # Tool integrations
 # ---------------------------------------------------------------------------
 
+# Local SearXNG used by pi-local-web's web_search tool.
+export SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+export PI_LOCAL_WEB_SEARXNG_URL="${PI_LOCAL_WEB_SEARXNG_URL:-http://127.0.0.1:$SEARXNG_PORT}"
+
 # fd integration with fzf (faster, respects .gitignore)
 export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
 export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"

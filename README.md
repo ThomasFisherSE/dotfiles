@@ -13,6 +13,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
 | **starship** | `.config/starship.toml` | Catppuccin Mocha palette, minimal git-aware prompt |
 | **tmux** | `.config/tmux/tmux.conf` | `C-a` prefix, vim-style navigation, Catppuccin theme, session persistence |
+| **pi** | `.pi/agent/`, `.local/bin/pi*` | Sandboxed Pi launcher, host broker, custom extensions, local web-tool package wiring |
 
 ## Dependencies
 
@@ -40,6 +41,40 @@ stow -D <package>
 ```
 
 After stowing tmux, install plugins inside a tmux session with `prefix + I`.
+
+## Pi Local Web
+
+The Pi settings install a local-first web extension from `~/dev/pi-local-web`. It provides:
+
+- `web_fetch` for direct URL/page fetches with markdown or homepage-link extraction.
+- `web_search` for SearXNG-backed search without paid search APIs.
+
+Install or refresh the package after cloning/restoring the extension checkout:
+
+```bash
+scripts/install-pi-local-web.sh
+```
+
+For search, run or point at a SearXNG instance:
+
+```bash
+export PI_LOCAL_WEB_SEARXNG_URL=http://127.0.0.1:8080
+```
+
+Create the local Docker setup with:
+
+```bash
+scripts/setup-searxng-local.sh
+```
+
+If port 8080 is busy, pick another local port consistently:
+
+```bash
+SEARXNG_PORT=8888 scripts/setup-searxng-local.sh --start
+export SEARXNG_PORT=8888
+```
+
+The Pi sandbox forwards `PI_LOCAL_WEB_SEARXNG_URL` and `SEARXNG_URL` when present.
 
 ## Reloading Configs
 
