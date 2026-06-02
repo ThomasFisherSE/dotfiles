@@ -3,10 +3,30 @@ set -euo pipefail
 
 # Mark or clear the tmux window that owns the current agent pane.
 # Usage:
-#   agent-tmux-notify        # mark the agent window as needing attention
-#   agent-tmux-notify clear  # clear the per-window attention style
+#   agent-tmux-notify              # mark the agent window as needing attention
+#   agent-tmux-notify clear        # clear the per-window attention style
+#   agent-tmux-notify clear %1     # clear the window that owns pane %1
 # Codex appends a JSON notification payload as argv. Only completion payloads
 # should mark the window; other notification types are not actionable.
+notify_option="@agent_tmux_notify"
+cache_script="${AGENT_TMUX_NOTIFY_CACHE:-$HOME/.config/tmux/scripts/agent-tmux-notify-cache}"
+target="${2:-}"
+
+refresh_notification_cache() {
+  if [[ -x "$cache_script" ]]; then
+    "$cache_script" >/dev/null 2>&1 || true
+  fi
+  tmux refresh-client -S >/dev/null 2>&1 || true
+}
+
+clear_window_notification() {
+  local target_window="$1"
+  tmux set-window-option -q -t "$target_window" -u window-status-format
+  tmux set-window-option -q -t "$target_window" -u window-status-current-format
+  tmux set-window-option -q -t "$target_window" -u "$notify_option"
+  refresh_notification_cache
+}
+
 case "${1:-mark}" in
   clear)
     mode="clear"
@@ -37,6 +57,10 @@ if ! command -v tmux >/dev/null 2>&1; then
 fi
 
 find_tmux_pane() {
+  if [[ -n "$target" ]]; then
+    tmux display-message -p -t "$target" "#{pane_id}" 2>/dev/null && return 0
+  fi
+
   if [[ -n "${TMUX_PANE:-}" ]]; then
     printf '%s\n' "$TMUX_PANE"
     return 0
@@ -71,15 +95,27 @@ if [[ -z "$window_id" ]]; then
 fi
 
 if [[ "$mode" == "clear" ]]; then
-  tmux set-window-option -q -t "$window_id" -u window-status-format
-  tmux set-window-option -q -t "$window_id" -u window-status-current-format
+  clear_window_notification "$window_id"
   exit 0
 fi
 
-# The marker is only useful for windows that are not currently visible.
-if [[ "$(tmux display-message -p -t "$window_id" "#{window_active}" 2>/dev/null || printf '0')" == "1" ]]; then
-  tmux set-window-option -q -t "$window_id" -u window-status-format
-  tmux set-window-option -q -t "$window_id" -u window-status-current-format
+window_is_visible() {
+  local target_window="$1"
+  local visible_window
+
+  while read -r visible_window; do
+    if [[ "$visible_window" == "$target_window" ]]; then
+      return 0
+    fi
+  done < <(tmux list-clients -F '#{window_id}' 2>/dev/null || true)
+
+  return 1
+}
+
+# The marker is only useful for windows that are not visible to an attached
+# tmux client. A background session can still have an "active" window.
+if window_is_visible "$window_id"; then
+  clear_window_notification "$window_id"
   exit 0
 fi
 
@@ -89,3 +125,6 @@ if [[ -n "$base_format" ]]; then
   tmux set-window-option -q -t "$window_id" window-status-format \
     "${base_format//\#\{@thm_overlay_2\}/$attention_color}"
 fi
+
+tmux set-window-option -q -t "$window_id" "$notify_option" "1"
+refresh_notification_cache

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+notify_option="@agent_tmux_notify"
+count_option="@agent_tmux_notify_count"
+prefix_option="@agent_tmux_notify_prefix"
+flag="${AGENT_TMUX_NOTIFY_FLAG:-$'\342\232\221'}"
+red="$(tmux show-option -gqv @thm_red 2>/dev/null || true)"
+red="${red:-#f38ba8}"
+
+declare -A counts=()
+session_id=""
+state=""
+
+while IFS='|' read -r session_id state; do
+  if [[ "$state" == "1" ]]; then
+    counts["$session_id"]=$(( ${counts["$session_id"]:-0} + 1 ))
+  fi
+done < <(tmux list-windows -a -F "#{session_id}|#{${notify_option}}" 2>/dev/null || true)
+
+while IFS= read -r session_id; do
+  if [[ -n "${counts["$session_id"]:-}" ]]; then
+    tmux set-option -q -t "$session_id" "$count_option" "${counts["$session_id"]}"
+    tmux set-option -q -t "$session_id" "$prefix_option" "#[fg=${red}]${flag} ${counts["$session_id"]} #[default]"
+  else
+    tmux set-option -q -t "$session_id" -u "$count_option"
+    tmux set-option -q -t "$session_id" -u "$prefix_option"
+  fi
+done < <(tmux list-sessions -F "#{session_id}" 2>/dev/null || true)

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+current_session_name="${1:-}"
+notify_option="@agent_tmux_notify"
+flag="${AGENT_TMUX_NOTIFY_FLAG:-$'\342\232\221'}"
+red="$(tmux show-option -gqv @thm_red 2>/dev/null || true)"
+red="${red:-#f38ba8}"
+
+declare -A sessions=()
+session_name=""
+state=""
+
+while IFS='|' read -r session_name state; do
+  if [[ "$state" == "1" && "$session_name" != "$current_session_name" ]]; then
+    sessions["$session_name"]=1
+  fi
+done < <(tmux list-windows -a -F "#{session_name}|#{${notify_option}}" 2>/dev/null || true)
+
+count="${#sessions[@]}"
+if (( count > 0 )); then
+  printf '#[fg=%s]%s %s#[default] ' "$red" "$flag" "$count"
+fi
