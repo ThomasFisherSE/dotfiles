@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/light-cargo-builds"
+ENABLED_FILE="$STATE_DIR/enabled"
+JOBS_FILE="$STATE_DIR/jobs"
+NICE_FILE="$STATE_DIR/nice"
+
+find_real_cargo() {
+  if [[ -n "${LIGHT_CARGO_REAL_CARGO:-}" && -x "${LIGHT_CARGO_REAL_CARGO:-}" ]]; then
+    printf '%s\n' "$LIGHT_CARGO_REAL_CARGO"
+    return 0
+  fi
+
+  for candidate in /usr/bin/cargo /usr/local/bin/cargo "$HOME/.cargo/bin/cargo"; do
+    if [[ -x "$candidate" && "$(readlink -f "$candidate")" != "$(readlink -f "$0")" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf 'cargo wrapper: could not find real cargo. Set LIGHT_CARGO_REAL_CARGO=/path/to/cargo.\n' >&2
+  return 127
+}
+
+read_positive_int_file() {
+  local path="$1"
+  local fallback="$2"
+  local value="$fallback"
+  if [[ -f "$path" ]]; then
+    value="$(tr -d '[:space:]' < "$path")"
+  fi
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    value="$fallback"
+  fi
+  printf '%s\n' "$value"
+}
+
+read_int_file() {
+  local path="$1"
+  local fallback="$2"
+  local value="$fallback"
+  if [[ -f "$path" ]]; then
+    value="$(tr -d '[:space:]' < "$path")"
+  fi
+  if [[ ! "$value" =~ ^-?[0-9]+$ ]]; then
+    value="$fallback"
+  fi
+  printf '%s\n' "$value"
+}
+
+real_cargo="$(find_real_cargo)"
+
+if [[ ! -f "$ENABLED_FILE" ]]; then
+  exec "$real_cargo" "$@"
+fi
+
+jobs="$(read_positive_int_file "$JOBS_FILE" 1)"
+nice_level="$(read_int_file "$NICE_FILE" 10)"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}"
+
+runner=("$real_cargo")
+if command -v ionice >/dev/null 2>&1; then
+  runner=(ionice -c 3 "${runner[@]}")
+fi
+if command -v nice >/dev/null 2>&1; then
+  runner=(nice -n "$nice_level" "${runner[@]}")
+fi
+
+exec "${runner[@]}" "$@"

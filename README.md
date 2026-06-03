@@ -13,6 +13,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
 | **starship** | `.config/starship.toml` | Catppuccin Mocha palette, minimal git-aware prompt |
 | **tmux** | `.config/tmux/tmux.conf` | `C-a` prefix, vim-style navigation, Catppuccin theme, session persistence |
+| **light-cargo** | `.local/bin/cargo`, `.local/bin/light-cargo-builds` | Toggleable low-impact Cargo wrapper for multi-agent build sessions |
 | **pi** | `.pi/agent/`, `.local/bin/pi*` | Sandboxed Pi launcher, host broker, custom extensions, local web-tool package wiring |
 
 ## Dependencies
@@ -34,7 +35,7 @@ git clone git@github.com:ThomasFisherSE/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 
 # Stow individual packages
-stow alacritty bash git ghostty nvim starship tmux
+stow alacritty bash git ghostty nvim starship tmux light-cargo
 
 # Remove symlinks for a package
 stow -D <package>

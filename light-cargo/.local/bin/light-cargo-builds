@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/light-cargo-builds"
+ENABLED_FILE="$STATE_DIR/enabled"
+JOBS_FILE="$STATE_DIR/jobs"
+NICE_FILE="$STATE_DIR/nice"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  light-cargo-builds on [jobs]
+  light-cargo-builds off
+  light-cargo-builds status
+
+Examples:
+  light-cargo-builds on      # limit Cargo to one job
+  light-cargo-builds on 2    # limit Cargo to two jobs
+  light-cargo-builds off     # restore normal Cargo behavior
+EOF
+}
+
+validate_jobs() {
+  local jobs="$1"
+  if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'light-cargo-builds: jobs must be a positive integer, got %q\n' "$jobs" >&2
+    exit 2
+  fi
+}
+
+current_jobs() {
+  local jobs="1"
+  if [[ -f "$JOBS_FILE" ]]; then
+    jobs="$(tr -d '[:space:]' < "$JOBS_FILE")"
+  fi
+  if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+    jobs="1"
+  fi
+  printf '%s\n' "$jobs"
+}
+
+current_nice() {
+  local nice_level="10"
+  if [[ -f "$NICE_FILE" ]]; then
+    nice_level="$(tr -d '[:space:]' < "$NICE_FILE")"
+  fi
+  if [[ ! "$nice_level" =~ ^-?[0-9]+$ ]]; then
+    nice_level="10"
+  fi
+  printf '%s\n' "$nice_level"
+}
+
+command="${1:-status}"
+case "$command" in
+  on)
+    jobs="${2:-1}"
+    validate_jobs "$jobs"
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$jobs" > "$JOBS_FILE"
+    printf '%s\n' "10" > "$NICE_FILE"
+    printf '%s\n' "on" > "$ENABLED_FILE"
+    printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available)\n' "$jobs" "$(current_nice)"
+    ;;
+  off)
+    mkdir -p "$STATE_DIR"
+    rm -f "$ENABLED_FILE"
+    printf 'light-cargo-builds: off (Cargo runs normally)\n'
+    ;;
+  status)
+    jobs="$(current_jobs)"
+    nice_level="$(current_nice)"
+    if [[ -f "$ENABLED_FILE" ]]; then
+      printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available)\n' "$jobs" "$nice_level"
+    else
+      printf 'light-cargo-builds: off (Cargo runs normally)\n'
+    fi
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
