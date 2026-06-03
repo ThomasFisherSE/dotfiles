@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mark or clear the tmux window that owns the current agent pane.
+# Play an audible completion bell, and mark or clear the tmux window that owns
+# the current agent pane.
 # Usage:
 #   agent-tmux-notify              # mark the agent window as needing attention
 #   agent-tmux-notify clear        # clear the per-window attention style
@@ -10,7 +11,23 @@ set -euo pipefail
 # should mark the window; other notification types are not actionable.
 notify_option="@agent_tmux_notify"
 cache_script="${AGENT_TMUX_NOTIFY_CACHE:-$HOME/.config/tmux/scripts/agent-tmux-notify-cache}"
+bell_sound="${AGENT_TMUX_NOTIFY_SOUND:-/usr/share/sounds/freedesktop/stereo/bell.oga}"
 target="${2:-}"
+
+play_notification_bell() {
+  if [[ "${AGENT_TMUX_NOTIFY_BELL:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  if command -v paplay >/dev/null 2>&1 && [[ -r "$bell_sound" ]]; then
+    paplay "$bell_sound" >/dev/null 2>&1 &
+    return 0
+  fi
+
+  if [[ -w /dev/tty ]]; then
+    printf '\a' >/dev/tty 2>/dev/null || true
+  fi
+}
 
 refresh_notification_cache() {
   if [[ -x "$cache_script" ]]; then
@@ -51,6 +68,10 @@ case "${1:-mark}" in
     mode="mark"
     ;;
 esac
+
+if [[ "$mode" == "mark" ]]; then
+  play_notification_bell
+fi
 
 if ! command -v tmux >/dev/null 2>&1; then
   exit 0
