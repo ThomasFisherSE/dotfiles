@@ -5,6 +5,7 @@ STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/light-cargo-builds"
 ENABLED_FILE="$STATE_DIR/enabled"
 JOBS_FILE="$STATE_DIR/jobs"
 NICE_FILE="$STATE_DIR/nice"
+LOCK_FILE="$STATE_DIR/build.lock"
 
 find_real_cargo() {
   if [[ -n "${LIGHT_CARGO_REAL_CARGO:-}" && -x "${LIGHT_CARGO_REAL_CARGO:-}" ]]; then
@@ -49,6 +50,80 @@ read_int_file() {
   printf '%s\n' "$value"
 }
 
+cargo_subcommand() {
+  local arg
+  local skip_next=0
+
+  for arg in "$@"; do
+    if (( skip_next )); then
+      skip_next=0
+      continue
+    fi
+
+    case "$arg" in
+      +*)
+        ;;
+      --config|--color|--manifest-path|--target-dir|-C|-Z)
+        skip_next=1
+        ;;
+      --config=*|--color=*|--manifest-path=*|--target-dir=*|-Z*)
+        ;;
+      -*)
+        ;;
+      *)
+        printf '%s\n' "$arg"
+        return 0
+        ;;
+    esac
+  done
+}
+
+args_request_help() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+should_lock_cargo() {
+  local subcommand
+
+  if args_request_help "$@"; then
+    return 1
+  fi
+
+  subcommand="$(cargo_subcommand "$@")"
+  case "$subcommand" in
+    build|check|test|clippy|run|bench|doc|rustc)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+acquire_build_lock() {
+  local subcommand
+
+  if ! command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    subcommand="$(cargo_subcommand "$@")"
+    printf 'light-cargo-builds: waiting for another cargo %s to finish...\n' "${subcommand:-build}" >&2
+    flock 9
+  fi
+}
+
 real_cargo="$(find_real_cargo)"
 
 if [[ ! -f "$ENABLED_FILE" ]]; then
@@ -65,6 +140,10 @@ if command -v ionice >/dev/null 2>&1; then
 fi
 if command -v nice >/dev/null 2>&1; then
   runner=(nice -n "$nice_level" "${runner[@]}")
+fi
+
+if should_lock_cargo "$@"; then
+  acquire_build_lock "$@"
 fi
 
 exec "${runner[@]}" "$@"

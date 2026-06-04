@@ -14,8 +14,8 @@ Usage:
   light-cargo-builds status
 
 Examples:
-  light-cargo-builds on      # limit Cargo to one job
-  light-cargo-builds on 2    # limit Cargo to two jobs
+  light-cargo-builds on      # limit Cargo to one job and queue heavy builds
+  light-cargo-builds on 2    # limit Cargo to two jobs and queue heavy builds
   light-cargo-builds off     # restore normal Cargo behavior
 EOF
 }
@@ -59,7 +59,7 @@ case "$command" in
     printf '%s\n' "$jobs" > "$JOBS_FILE"
     printf '%s\n' "10" > "$NICE_FILE"
     printf '%s\n' "on" > "$ENABLED_FILE"
-    printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available)\n' "$jobs" "$(current_nice)"
+    printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available, build-lock=on)\n' "$jobs" "$(current_nice)"
     ;;
   off)
     mkdir -p "$STATE_DIR"
@@ -70,7 +70,7 @@ case "$command" in
     jobs="$(current_jobs)"
     nice_level="$(current_nice)"
     if [[ -f "$ENABLED_FILE" ]]; then
-      printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available)\n' "$jobs" "$nice_level"
+      printf 'light-cargo-builds: on (CARGO_BUILD_JOBS=%s, nice=%s, ionice=idle when available, build-lock=on)\n' "$jobs" "$nice_level"
     else
       printf 'light-cargo-builds: off (Cargo runs normally)\n'
     fi
