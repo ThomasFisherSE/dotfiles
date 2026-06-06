@@ -1,0 +1,611 @@
+#!/usr/bin/env bash
+
+set -u
+
+home_depth=1
+home_lines=18
+run_home_scan=1
+use_color=1
+
+mib=$((1024 * 1024))
+gib=$((1024 * mib))
+
+trash_threshold=$((100 * mib))
+small_cache_threshold=$((100 * mib))
+large_cache_threshold=$gib
+journal_threshold=$gib
+flatpak_threshold=$gib
+docker_threshold=$((100 * mib))
+review_threshold=$((10 * gib))
+
+declare -A path_size_bytes=()
+declare -a cleanup_actions=()
+declare -a review_actions=()
+
+if [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
+  use_color=0
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --deep)
+      home_depth=2
+      home_lines=30
+      ;;
+    --fast | --no-home-scan)
+      run_home_scan=0
+      ;;
+    --no-color)
+      use_color=0
+      ;;
+    -h | --help)
+      cat <<'USAGE'
+Usage: disk-audit [--deep] [--fast] [--no-color]
+
+Summarize likely disk cleanup targets without deleting anything.
+
+Options:
+  --deep          Show more home-directory detail.
+  --fast          Skip the full home-directory scan.
+  --no-color      Disable headings styled with terminal colors.
+USAGE
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      printf 'Run disk-audit --help for usage.\n' >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ "$use_color" -eq 1 ]] && command -v tput >/dev/null 2>&1; then
+  bold="$(tput bold 2>/dev/null || true)"
+  reset="$(tput sgr0 2>/dev/null || true)"
+else
+  bold=""
+  reset=""
+fi
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+section() {
+  printf '\n%s%s%s\n' "$bold" "$1" "$reset"
+  printf '%s\n' "----------------------------------------"
+}
+
+note() {
+  printf '  %s\n' "$1"
+}
+
+add_cleanup_action() {
+  cleanup_actions+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4")
+}
+
+add_review_action() {
+  review_actions+=("$1"$'\t'"$2")
+}
+
+human_bytes() {
+  local bytes="$1"
+
+  if have numfmt; then
+    numfmt --to=iec-i --suffix=B "$bytes" 2>/dev/null || printf '%sB\n' "$bytes"
+  else
+    printf '%sB\n' "$bytes"
+  fi
+}
+
+pretty_path() {
+  local path="$1"
+
+  case "$path" in
+    "$HOME")
+      printf '~\n'
+      ;;
+    "$HOME"/*)
+      printf '~/%s\n' "${path#"$HOME"/}"
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+human_to_bytes() {
+  local value="$1"
+  local unit="${2:-B}"
+
+  awk -v value="$value" -v unit="$unit" '
+    BEGIN {
+      if (unit == "" || unit == "B" || unit == "byte" || unit == "bytes") mult = 1
+      else if (unit == "K" || unit == "KB" || unit == "kB") mult = 1000
+      else if (unit == "M" || unit == "MB") mult = 1000 * 1000
+      else if (unit == "G" || unit == "GB") mult = 1000 * 1000 * 1000
+      else if (unit == "T" || unit == "TB") mult = 1000 * 1000 * 1000 * 1000
+      else if (unit == "KiB") mult = 1024
+      else if (unit == "MiB") mult = 1024 * 1024
+      else if (unit == "GiB") mult = 1024 * 1024 * 1024
+      else if (unit == "TiB") mult = 1024 * 1024 * 1024 * 1024
+      else mult = 1
+
+      printf "%.0f\n", value * mult
+    }
+  '
+}
+
+size_token_to_bytes() {
+  local token="$1"
+  local value unit
+
+  token="${token%% *}"
+  if [[ "$token" =~ ^([0-9]+([.][0-9]+)?)([A-Za-z]+)?$ ]]; then
+    value="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[3]:-B}"
+    human_to_bytes "$value" "$unit"
+  else
+    printf '0\n'
+  fi
+}
+
+get_path_size_bytes() {
+  local path="$1"
+  local bytes
+
+  [[ -e "$path" ]] || {
+    printf '0\n'
+    return
+  }
+
+  bytes="$(du -s --block-size=1 "$path" 2>/dev/null | awk '{print $1}')"
+  if [[ "$bytes" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$bytes"
+  else
+    printf '0\n'
+  fi
+}
+
+bytes_for_path() {
+  local path="$1"
+  printf '%s\n' "${path_size_bytes[$path]:-0}"
+}
+
+parse_paccache_saved_bytes() {
+  local output="$1"
+  local saved
+
+  saved="$(printf '%s\n' "$output" | sed -nE 's/.*disk space saved: ([0-9.]+) ([A-Za-z]+).*/\1 \2/p' | tail -n 1)"
+  if [[ "$saved" =~ ^([0-9.]+)[[:space:]]+([A-Za-z]+)$ ]]; then
+    human_to_bytes "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '0\n'
+  fi
+}
+
+parse_paccache_saved_display() {
+  local output="$1"
+  local saved
+
+  saved="$(printf '%s\n' "$output" | sed -nE 's/.*disk space saved: ([0-9.]+ [A-Za-z]+).*/\1/p' | tail -n 1)"
+  if [[ -n "$saved" ]]; then
+    printf '%s\n' "$saved"
+  else
+    printf '0B\n'
+  fi
+}
+
+print_size_rows() {
+  local rows="$1"
+
+  if [[ -z "$rows" ]]; then
+    note "No matching paths found."
+    return
+  fi
+
+  printf '%s' "$rows" |
+    sort -nr |
+    while IFS=$'\t' read -r bytes label; do
+      [[ -n "$bytes" ]] || continue
+      printf '%10s  %s\n' "$(human_bytes "$bytes")" "$label"
+    done
+}
+
+print_path_sizes() {
+  local title="$1"
+  shift
+
+  section "$title"
+
+  local path bytes label rows
+  rows=""
+  for path in "$@"; do
+    [[ -e "$path" ]] || continue
+    bytes="$(get_path_size_bytes "$path")"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || continue
+    path_size_bytes["$path"]="$bytes"
+    label="$(pretty_path "$path")"
+    rows+="${bytes}"$'\t'"${label}"$'\n'
+  done
+
+  print_size_rows "$rows"
+}
+
+print_single_path_size() {
+  local path="$1"
+  local bytes label
+
+  [[ -e "$path" ]] || return
+  bytes="$(get_path_size_bytes "$path")"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || return
+  path_size_bytes["$path"]="$bytes"
+  label="$(pretty_path "$path")"
+  printf '%10s  %s\n' "$(human_bytes "$bytes")" "$label"
+}
+
+print_home_scan() {
+  section "Largest entries in ~"
+
+  if [[ "$run_home_scan" -eq 0 ]]; then
+    note "Skipped. Run without --fast for the full home scan."
+    return
+  fi
+
+  if have dust; then
+    local dust_args=(
+      --no-progress
+      --no-percent-bars
+      --screen-reader
+      -x
+      -d "$home_depth"
+      -n "$home_lines"
+    )
+
+    if [[ "$use_color" -eq 0 ]]; then
+      dust_args+=(--no-colors)
+    fi
+
+    note "Same filesystem only. Use --deep for more detail."
+    dust "${dust_args[@]}" "$HOME" 2>/dev/null || note "dust could not scan $HOME."
+    return
+  fi
+
+  local rows
+  rows="$(
+    find "$HOME" -xdev -mindepth 1 -maxdepth 1 -exec du -s --block-size=1 {} + 2>/dev/null |
+      awk '{bytes=$1; $1=""; sub(/^ /, ""); print bytes "\t" $0}'
+  )"
+  print_size_rows "$rows"
+}
+
+print_filesystems() {
+  section "Filesystem usage"
+  df -hT -x tmpfs -x devtmpfs -x squashfs 2>/dev/null || df -h
+}
+
+print_journal() {
+  section "Systemd journal"
+
+  if have journalctl; then
+    journalctl --disk-usage 2>/dev/null || note "journalctl could not read journal usage."
+  else
+    note "journalctl is not installed."
+  fi
+}
+
+print_pacman_cache() {
+  section "Pacman package cache"
+
+  if [[ -d /var/cache/pacman/pkg ]]; then
+    print_single_path_size /var/cache/pacman/pkg
+  else
+    note "/var/cache/pacman/pkg was not found."
+  fi
+
+  if have paccache; then
+    local keep_output keep_bytes keep_display uninstalled_output uninstalled_bytes uninstalled_display
+
+    printf '\n'
+    note "Dry run: keep two installed versions"
+    keep_output="$(paccache -d -k 2 2>/dev/null || true)"
+    if [[ -n "$keep_output" ]]; then
+      printf '%s\n' "$keep_output" | sed '/^$/d'
+      keep_bytes="$(parse_paccache_saved_bytes "$keep_output")"
+      keep_display="$(parse_paccache_saved_display "$keep_output")"
+      if ((keep_bytes >= small_cache_threshold)); then
+        add_cleanup_action \
+          "$keep_bytes" \
+          "sudo paccache -r -k 2" \
+          "Pacman dry-run found old cached package versions. Dry-run estimate: $keep_display." \
+          "Lose older cached packages; rollback may need redownload."
+      fi
+    else
+      note "paccache dry run failed."
+    fi
+
+    printf '\n'
+    note "Dry run: remove cached packages for uninstalled packages"
+    uninstalled_output="$(paccache -d -u -k 0 2>/dev/null || true)"
+    if [[ -n "$uninstalled_output" ]]; then
+      printf '%s\n' "$uninstalled_output" | sed '/^$/d'
+      uninstalled_bytes="$(parse_paccache_saved_bytes "$uninstalled_output")"
+      uninstalled_display="$(parse_paccache_saved_display "$uninstalled_output")"
+      if ((uninstalled_bytes >= small_cache_threshold)); then
+        add_cleanup_action \
+          "$uninstalled_bytes" \
+          "sudo paccache -r -u -k 0" \
+          "Pacman dry-run found cached packages for uninstalled packages. Dry-run estimate: $uninstalled_display." \
+          "Reinstalling removed packages may need redownload."
+      fi
+    else
+      note "paccache uninstalled-package dry run failed."
+    fi
+  else
+    note "paccache is not installed. Install pacman-contrib for cache dry-runs."
+  fi
+}
+
+print_docker() {
+  section "Docker"
+
+  if have docker; then
+    local docker_output docker_reclaimable type reclaimable token bytes build_bytes other_bytes
+    build_bytes=0
+    other_bytes=0
+
+    if docker_output="$(docker system df 2>/dev/null)"; then
+      printf '%s\n' "$docker_output"
+      docker_reclaimable="$(docker system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null || true)"
+
+      while IFS=$'\t' read -r type reclaimable; do
+        [[ -n "${type:-}" && -n "${reclaimable:-}" ]] || continue
+        token="${reclaimable%% *}"
+        bytes="$(size_token_to_bytes "$token")"
+
+        if [[ "$type" == "Build Cache" ]]; then
+          build_bytes=$((build_bytes + bytes))
+        else
+          other_bytes=$((other_bytes + bytes))
+        fi
+      done <<<"$docker_reclaimable"
+
+      if ((build_bytes >= docker_threshold)); then
+        add_cleanup_action \
+          "$build_bytes" \
+          "docker builder prune" \
+          "Docker build cache is reclaimable." \
+          "Future Docker builds may be slower."
+      fi
+
+      if ((other_bytes >= docker_threshold)); then
+        add_cleanup_action \
+          "$other_bytes" \
+          "docker system prune" \
+          "Docker reports reclaimable space outside build cache." \
+          "Removes stopped containers and dangling data."
+      fi
+    else
+      note "Docker daemon is unavailable or this user cannot query it."
+    fi
+  else
+    note "docker is not installed."
+  fi
+}
+
+print_flatpak() {
+  section "Flatpak"
+
+  if have flatpak; then
+    local system_count user_count
+    system_count="$(flatpak list --system --columns=application 2>/dev/null | sed '/^$/d' | wc -l)"
+    user_count="$(flatpak list --user --columns=application 2>/dev/null | sed '/^$/d' | wc -l)"
+    note "Installed refs: ${system_count} system, ${user_count} user"
+
+    local flatpak_bytes
+    flatpak_bytes=$(($(bytes_for_path /var/lib/flatpak) + $(bytes_for_path "$HOME/.local/share/flatpak")))
+    if ((flatpak_bytes >= flatpak_threshold && (system_count + user_count) > 0)); then
+      add_cleanup_action \
+        "0" \
+        "flatpak uninstall --unused" \
+        "Flatpak storage is about $(human_bytes "$flatpak_bytes"); this checks for unused runtimes, but removable space is unknown until Flatpak prompts." \
+        "Unused runtimes may be redownloaded later."
+    fi
+  else
+    note "flatpak is not installed."
+  fi
+}
+
+collect_path_based_actions() {
+  local bytes
+
+  bytes="$(bytes_for_path "$HOME/.local/share/Trash")"
+  if ((bytes >= trash_threshold)) && have gio; then
+    add_cleanup_action \
+      "$bytes" \
+      "gio trash --empty" \
+      "Trash is $(human_bytes "$bytes")." \
+      "Permanently deletes trash contents."
+  fi
+
+  bytes="$(bytes_for_path /var/log/journal)"
+  if ((bytes >= journal_threshold)) && have journalctl; then
+    local journal_removable=$((bytes - gib))
+    ((journal_removable > 0)) || journal_removable=0
+    add_cleanup_action \
+      "$journal_removable" \
+      "sudo journalctl --vacuum-size=1G" \
+      "System journal is $(human_bytes "$bytes"); vacuum target is 1GiB." \
+      "Older system logs are removed."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/.cache/yay")"
+  if ((bytes >= large_cache_threshold)) && have yay; then
+    add_cleanup_action \
+      "$bytes" \
+      "yay -Sc" \
+      "Yay cache is $(human_bytes "$bytes")." \
+      "AUR rebuilds or reinstalls may redownload/rebuild."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/.cache/pip")"
+  if ((bytes >= large_cache_threshold)) && have python; then
+    add_cleanup_action \
+      "$bytes" \
+      "python -m pip cache purge" \
+      "Pip cache is $(human_bytes "$bytes")." \
+      "Future pip installs may redownload packages."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/.npm")"
+  if ((bytes >= large_cache_threshold)) && have npm; then
+    add_cleanup_action \
+      "$bytes" \
+      "npm cache clean --force" \
+      "Npm cache is $(human_bytes "$bytes")." \
+      "Future npm installs may redownload packages."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/.cache/go-build")"
+  if ((bytes >= large_cache_threshold)) && have go; then
+    add_cleanup_action \
+      "$bytes" \
+      "go clean -cache" \
+      "Go build cache is $(human_bytes "$bytes")." \
+      "Future Go builds may rebuild packages."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/go/pkg/mod")"
+  if ((bytes >= large_cache_threshold)) && have go; then
+    add_cleanup_action \
+      "$bytes" \
+      "go clean -modcache" \
+      "Go module cache is $(human_bytes "$bytes")." \
+      "Future Go builds may redownload modules."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/Downloads")"
+  if ((bytes >= review_threshold)); then
+    add_review_action \
+      "dust -d 2 ~/Downloads" \
+      "Downloads is $(human_bytes "$bytes"); review before deleting."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/Videos")"
+  if ((bytes >= review_threshold)); then
+    add_review_action \
+      "dust -d 2 ~/Videos" \
+      "Videos is $(human_bytes "$bytes"); review before deleting."
+  fi
+
+  bytes="$(bytes_for_path "$HOME/.local/share/Steam")"
+  if ((bytes >= review_threshold)); then
+    add_review_action \
+      "dust -d 2 ~/.local/share/Steam" \
+      "Steam data is $(human_bytes "$bytes"); use Steam's uninstall/move tools for games."
+  fi
+}
+
+print_suggested_actions() {
+  local item bytes command reason downside
+
+  section "Suggested cleanup actions"
+  note "Generated from targets that crossed size or reclaimable-space thresholds."
+
+  if [[ "${#cleanup_actions[@]}" -eq 0 ]]; then
+    note "No command-based cleanup target looks large enough to suggest."
+  else
+    printf '\n'
+    printf 'Commands that may free space:\n'
+    for item in "${cleanup_actions[@]}"; do
+      IFS=$'\t' read -r bytes command reason downside <<<"$item"
+      printf '  %s\n' "$command"
+      printf '      %s\n' "$reason"
+      if ((bytes > 0)); then
+        printf '      Estimated removable: %s\n' "$(human_bytes "$bytes")"
+      fi
+      printf '      Tradeoff: %s\n' "$downside"
+    done
+  fi
+
+  if [[ "${#review_actions[@]}" -gt 0 ]]; then
+    printf '\n'
+    printf 'Large areas to inspect manually:\n'
+    for item in "${review_actions[@]}"; do
+      IFS=$'\t' read -r command reason <<<"$item"
+      printf '  %s\n' "$command"
+      printf '      %s\n' "$reason"
+    done
+  fi
+}
+
+print_top_cleanup_wins() {
+  local sorted item bytes command reason downside count
+  count=0
+
+  section "Top 3 quick wins"
+  note "Run these first for low-risk cache, log, or trash cleanup."
+
+  if [[ "${#cleanup_actions[@]}" -eq 0 ]]; then
+    note "No cleanup target crossed the suggestion thresholds."
+    return
+  fi
+
+  sorted="$(printf '%s\n' "${cleanup_actions[@]}" | awk -F '\t' '$1 > 0' | sort -nr -t $'\t' -k1,1 | head -n 3)"
+  if [[ -z "$sorted" ]]; then
+    note "No suggested cleanup command has an estimated removable size."
+    return
+  fi
+
+  while IFS=$'\t' read -r bytes command reason downside; do
+    [[ -n "${bytes:-}" ]] || continue
+    count=$((count + 1))
+    printf '  %d. %-36s ~%s\n' "$count" "$command" "$(human_bytes "$bytes")"
+    printf '      tradeoff: %s\n' "$downside"
+  done <<<"$sorted"
+}
+
+printf 'Disk audit for %s at %s\n' "$(hostname 2>/dev/null || printf 'this host')" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+print_filesystems
+print_home_scan
+
+print_path_sizes "User cleanup candidates" \
+  "$HOME/.local/share/Trash" \
+  "$HOME/.cache" \
+  "$HOME/.cache/yay" \
+  "$HOME/.cache/paru" \
+  "$HOME/.cache/pip" \
+  "$HOME/.cache/go-build" \
+  "$HOME/.cargo" \
+  "$HOME/.rustup" \
+  "$HOME/.npm" \
+  "$HOME/go/pkg/mod" \
+  "$HOME/.local/share/flatpak" \
+  "$HOME/.var/app" \
+  "$HOME/.local/share/containers" \
+  "$HOME/.local/share/docker" \
+  "$HOME/.local/share/Steam" \
+  "$HOME/.steam" \
+  "$HOME/Downloads" \
+  "$HOME/Videos"
+note "Sizes can overlap when one candidate is inside another."
+
+print_path_sizes "System cleanup candidates" \
+  /var/cache/pacman/pkg \
+  /var/log/journal \
+  /var/lib/systemd/coredump \
+  /var/tmp \
+  /tmp \
+  /var/lib/docker \
+  /var/lib/flatpak
+note "Sizes can overlap when one candidate is inside another."
+
+collect_path_based_actions
+print_journal
+print_pacman_cache
+print_docker
+print_flatpak
+print_suggested_actions
+print_top_cleanup_wins

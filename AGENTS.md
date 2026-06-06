@@ -12,7 +12,7 @@ A GNU Stow-managed dotfiles repository for an Arch Linux (KDE Plasma) terminal w
 |---------|--------------|-------------|
 | `alacritty` | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
 | `ghostty` | `.config/ghostty/config` | Alacritty-style visuals, maximized tmux startup, JetBrainsMono Nerd Font, Shift+Enter binding |
-| `bash` | `.bashrc` | eza/fzf/zoxide/starship/atuin integrations, yazi wrapper, fd+fzf |
+| `bash` | `.bashrc`, `.local/bin/disk-audit` | eza/fzf/zoxide/starship/atuin integrations, yazi wrapper, fd+fzf, read-only disk cleanup report |
 | `git` | `.config/git/config` | delta pager (side-by-side diffs), credential helper |
 | `starship` | `.config/starship.toml` | Catppuccin Mocha palette, minimal prompt |
 | `tmux` | `.config/tmux/tmux.conf` | C-a prefix, vim-style nav, tpm plugins |

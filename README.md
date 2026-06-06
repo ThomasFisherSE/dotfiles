@@ -8,7 +8,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 |---------|--------|------------|
 | **alacritty** | `.config/alacritty/alacritty.toml` | JetBrainsMono Nerd Font, Shift+Return binding |
 | **ghostty** | `.config/ghostty/config` | Alacritty-style visuals, maximized tmux startup, JetBrainsMono Nerd Font, Shift+Enter binding |
-| **bash** | `.bashrc` | eza, fzf, zoxide, starship, yazi shell wrapper, lazygit alias, fd/fzf integration, atuin |
+| **bash** | `.bashrc`, `.local/bin/disk-audit` | eza, fzf, zoxide, starship, yazi shell wrapper, lazygit alias, fd/fzf integration, atuin, disk cleanup report |
 | **git** | `.config/git/config` | delta pager (side-by-side diffs, line numbers, navigate mode) |
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
 | **starship** | `.config/starship.toml` | Catppuccin Mocha palette, minimal git-aware prompt |
@@ -42,6 +42,19 @@ stow -D <package>
 ```
 
 After stowing tmux, install plugins inside a tmux session with `prefix + I`.
+
+## Helper Commands
+
+```bash
+# Read-only report of likely disk cleanup targets and data-driven suggestions
+disk-audit
+
+# Faster report that skips the full home-directory scan
+disk-audit --fast
+
+# More detailed home-directory scan
+disk-audit --deep
+```
 
 ## Pi Local Web
 
