@@ -197,6 +197,42 @@ parse_paccache_saved_display() {
   fi
 }
 
+estimate_yay_sc_cleanable_bytes() {
+  local cache_dir="$1"
+
+  [[ -d "$cache_dir" ]] || {
+    printf '0\n'
+    return
+  }
+
+  find "$cache_dir" -mindepth 2 -maxdepth 3 \
+    \( \
+      \( -type d -name pkg \) -o \
+      \( -type f \( \
+        -name '*.pkg.tar*' -o \
+        -name '*.tar.gz' -o \
+        -name '*.tar.xz' -o \
+        -name '*.tar.zst' -o \
+        -name '*.zip' -o \
+        -name '*.deb' -o \
+        -name '*.AppImage' \
+      \) \) \
+    \) \
+    -exec du -s --block-size=1 {} + 2>/dev/null |
+    awk '{sum += $1} END {print sum + 0}'
+}
+
+largest_yay_package_cache_row() {
+  local cache_dir="$1"
+
+  [[ -d "$cache_dir" ]] || return
+
+  find "$cache_dir" -mindepth 1 -maxdepth 1 -type d \
+    -exec du -s --block-size=1 {} + 2>/dev/null |
+    sort -nr |
+    head -n 1
+}
+
 print_size_rows() {
   local rows="$1"
 
@@ -351,9 +387,12 @@ print_docker() {
   section "Docker"
 
   if have docker; then
-    local docker_output docker_reclaimable type reclaimable token bytes build_bytes other_bytes
+    local docker_output docker_reclaimable type reclaimable token bytes
+    local image_bytes container_bytes volume_bytes build_bytes
+    image_bytes=0
+    container_bytes=0
+    volume_bytes=0
     build_bytes=0
-    other_bytes=0
 
     if docker_output="$(docker system df 2>/dev/null)"; then
       printf '%s\n' "$docker_output"
@@ -364,12 +403,37 @@ print_docker() {
         token="${reclaimable%% *}"
         bytes="$(size_token_to_bytes "$token")"
 
-        if [[ "$type" == "Build Cache" ]]; then
-          build_bytes=$((build_bytes + bytes))
-        else
-          other_bytes=$((other_bytes + bytes))
-        fi
+        case "$type" in
+          Images)
+            image_bytes=$((image_bytes + bytes))
+            ;;
+          Containers)
+            container_bytes=$((container_bytes + bytes))
+            ;;
+          "Local Volumes")
+            volume_bytes=$((volume_bytes + bytes))
+            ;;
+          "Build Cache")
+            build_bytes=$((build_bytes + bytes))
+            ;;
+        esac
       done <<<"$docker_reclaimable"
+
+      if ((image_bytes >= docker_threshold)); then
+        add_cleanup_action \
+          "$image_bytes" \
+          "docker image prune -a" \
+          "Docker has unused images reclaimable." \
+          "Images may need to be redownloaded or rebuilt."
+      fi
+
+      if ((container_bytes >= docker_threshold)); then
+        add_cleanup_action \
+          "$container_bytes" \
+          "docker container prune" \
+          "Docker has stopped containers reclaimable." \
+          "Stopped container records and logs are removed."
+      fi
 
       if ((build_bytes >= docker_threshold)); then
         add_cleanup_action \
@@ -379,12 +443,10 @@ print_docker() {
           "Future Docker builds may be slower."
       fi
 
-      if ((other_bytes >= docker_threshold)); then
-        add_cleanup_action \
-          "$other_bytes" \
-          "docker system prune" \
-          "Docker reports reclaimable space outside build cache." \
-          "Removes stopped containers and dangling data."
+      if ((volume_bytes >= docker_threshold)); then
+        add_review_action \
+          "docker system df -v" \
+          "Docker reports $(human_bytes "$volume_bytes") reclaimable in unused volumes; inspect before pruning volume data."
       fi
     else
       note "Docker daemon is unavailable or this user cannot query it."
@@ -442,11 +504,30 @@ collect_path_based_actions() {
 
   bytes="$(bytes_for_path "$HOME/.cache/yay")"
   if ((bytes >= large_cache_threshold)) && have yay; then
-    add_cleanup_action \
-      "$bytes" \
-      "yay -Sc" \
-      "Yay cache is $(human_bytes "$bytes")." \
-      "AUR rebuilds or reinstalls may redownload/rebuild."
+    local yay_cleanable_bytes largest_yay_row largest_yay_bytes largest_yay_path largest_yay_package
+    yay_cleanable_bytes="$(estimate_yay_sc_cleanable_bytes "$HOME/.cache/yay")"
+
+    if ((yay_cleanable_bytes >= small_cache_threshold)); then
+      add_cleanup_action \
+        "$yay_cleanable_bytes" \
+        "yay -Sc" \
+        "Yay has obvious package/build artifacts that its cache cleaner can remove." \
+        "AUR rebuilds or reinstalls may redownload/rebuild."
+    else
+      largest_yay_row="$(largest_yay_package_cache_row "$HOME/.cache/yay")"
+      if [[ -n "$largest_yay_row" ]]; then
+        read -r largest_yay_bytes largest_yay_path <<<"$largest_yay_row"
+        largest_yay_package="${largest_yay_path##*/}"
+
+        if ((largest_yay_bytes >= large_cache_threshold)) && [[ "$largest_yay_package" =~ ^[A-Za-z0-9@._+-]+$ ]]; then
+          add_cleanup_action \
+            "$largest_yay_bytes" \
+            "rm -rf ~/.cache/yay/$largest_yay_package" \
+            "Largest AUR cache checkout is $largest_yay_package at $(human_bytes "$largest_yay_bytes"); yay -Sc did not identify obvious removable artifacts." \
+            "Loses that AUR checkout/build cache; next update may redownload/rebuild."
+        fi
+      fi
+    fi
   fi
 
   bytes="$(bytes_for_path "$HOME/.cache/pip")"
@@ -545,7 +626,7 @@ print_top_cleanup_wins() {
   count=0
 
   section "Top 3 quick wins"
-  note "Run these first for low-risk cache, log, or trash cleanup."
+  note "Cache, log, and trash cleanup ranked by likely space recovered."
 
   if [[ "${#cleanup_actions[@]}" -eq 0 ]]; then
     note "No cleanup target crossed the suggestion thresholds."
