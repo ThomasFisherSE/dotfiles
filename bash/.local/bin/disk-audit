@@ -17,6 +17,8 @@ journal_threshold=$gib
 flatpak_threshold=$gib
 docker_threshold=$((100 * mib))
 review_threshold=$((10 * gib))
+cargo_target_threshold=$((5 * gib))
+cargo_target_stale_days=30
 
 declare -A path_size_bytes=()
 declare -a cleanup_actions=()
@@ -48,6 +50,10 @@ Options:
   --deep          Show more home-directory detail.
   --fast          Skip the full home-directory scan.
   --no-color      Disable headings styled with terminal colors.
+
+Environment:
+  DISK_AUDIT_CARGO_ROOTS
+                  Colon-separated roots to scan for Cargo target dirs.
 USAGE
       exit 0
       ;;
@@ -113,6 +119,34 @@ pretty_path() {
       printf '%s\n' "$path"
       ;;
   esac
+}
+
+shell_quote_path() {
+  local path="$1"
+  local rel
+
+  if [[ "$path" == "$HOME"/* ]]; then
+    rel="${path#"$HOME"/}"
+    rel="${rel//\\/\\\\}"
+    rel="${rel//\"/\\\"}"
+    rel="${rel//\$/\\$}"
+    rel="${rel//\`/\\\`}"
+    printf '"$HOME/%s"\n' "$rel"
+  else
+    printf '%q\n' "$path"
+  fi
+}
+
+days_old() {
+  local timestamp="$1"
+  local now age
+
+  now="$(date +%s)"
+  age=$(((now - timestamp) / 86400))
+  if ((age < 0)); then
+    age=0
+  fi
+  printf '%s\n' "$age"
 }
 
 human_to_bytes() {
@@ -233,6 +267,33 @@ largest_yay_package_cache_row() {
     head -n 1
 }
 
+scan_cargo_target_dirs() {
+  local roots_string root target bytes mtime
+  local -a roots
+  local -A seen=()
+
+  roots_string="${DISK_AUDIT_CARGO_ROOTS:-$HOME/dev:$HOME/src:$HOME/code:$HOME/projects:$HOME/work}"
+  IFS=: read -r -a roots <<<"$roots_string"
+
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
+
+    while IFS= read -r target; do
+      [[ -n "${seen[$target]:-}" ]] && continue
+      seen["$target"]=1
+
+      bytes="$(get_path_size_bytes "$target")"
+      [[ "$bytes" =~ ^[0-9]+$ ]] || continue
+      ((bytes > 0)) || continue
+
+      mtime="$(stat -c %Y "$target" 2>/dev/null || printf '0')"
+      [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+
+      printf '%s\t%s\t%s\n' "$bytes" "$mtime" "$target"
+    done < <(find "$root" -xdev -type d -name target -prune -print 2>/dev/null)
+  done
+}
+
 print_size_rows() {
   local rows="$1"
 
@@ -279,6 +340,49 @@ print_single_path_size() {
   path_size_bytes["$path"]="$bytes"
   label="$(pretty_path "$path")"
   printf '%10s  %s\n' "$(human_bytes "$bytes")" "$label"
+}
+
+print_cargo_targets() {
+  section "Cargo target dirs"
+
+  local rows total_bytes count sorted
+  total_bytes=0
+  count=0
+  rows="$(scan_cargo_target_dirs)"
+
+  if [[ -z "$rows" ]]; then
+    note "No Cargo target directories found in configured scan roots."
+    return
+  fi
+
+  while IFS=$'\t' read -r bytes _mtime _target; do
+    [[ -n "${bytes:-}" ]] || continue
+    total_bytes=$((total_bytes + bytes))
+    count=$((count + 1))
+  done <<<"$rows"
+
+  note "Found ${count} target dirs totaling $(human_bytes "$total_bytes"). Age is target directory mtime."
+  printf '%10s  %7s  %s\n' "Size" "Age" "Path"
+
+  sorted="$(printf '%s\n' "$rows" | sort -nr -t $'\t' -k1,1 | head -n 12)"
+  while IFS=$'\t' read -r bytes mtime target; do
+    [[ -n "${bytes:-}" ]] || continue
+    printf '%10s  %6sd  %s\n' "$(human_bytes "$bytes")" "$(days_old "$mtime")" "$(pretty_path "$target")"
+  done <<<"$sorted"
+
+  local age command
+  while IFS=$'\t' read -r bytes mtime target; do
+    [[ -n "${bytes:-}" ]] || continue
+    age="$(days_old "$mtime")"
+    if ((bytes >= cargo_target_threshold && age >= cargo_target_stale_days)); then
+      command="rm -rf $(shell_quote_path "$target")"
+      add_cleanup_action \
+        "$bytes" \
+        "$command" \
+        "Cargo target dir is $(human_bytes "$bytes") and appears stale (${age}d old)." \
+        "Future Rust builds for this project may take much longer."
+    fi
+  done <<<"$rows"
 }
 
 print_home_scan() {
@@ -642,7 +746,7 @@ print_top_cleanup_wins() {
   while IFS=$'\t' read -r bytes command reason downside; do
     [[ -n "${bytes:-}" ]] || continue
     count=$((count + 1))
-    printf '  %d. %-36s ~%s\n' "$count" "$command" "$(human_bytes "$bytes")"
+    printf '  %d. %8s  %s\n' "$count" "~$(human_bytes "$bytes")" "$command"
     printf '      tradeoff: %s\n' "$downside"
   done <<<"$sorted"
 }
@@ -672,6 +776,8 @@ print_path_sizes "User cleanup candidates" \
   "$HOME/Downloads" \
   "$HOME/Videos"
 note "Sizes can overlap when one candidate is inside another."
+
+print_cargo_targets
 
 print_path_sizes "System cleanup candidates" \
   /var/cache/pacman/pkg \
