@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+crf="${SHAREVID_CRF:-23}"
+
+usage() {
+  cat <<'USAGE'
+Usage: sharevid <video-file>
+
+Create a shareable H.264 MP4 next to the input file:
+  myvid.mp4 -> myvid_shareable.mp4
+
+Environment:
+  SHAREVID_CRF    Video quality value passed to ffmpeg, default: 23.
+                  Lower is higher quality and larger output.
+USAGE
+}
+
+if [[ $# -ne 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  if [[ $# -eq 1 && ( "${1:-}" == "-h" || "${1:-}" == "--help" ) ]]; then
+    exit 0
+  fi
+  exit 2
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  printf 'sharevid: ffmpeg is not installed or not in PATH\n' >&2
+  exit 127
+fi
+
+input="$1"
+
+if [[ ! -f "$input" ]]; then
+  printf 'sharevid: not a file: %s\n' "$input" >&2
+  exit 1
+fi
+
+dir="${input%/*}"
+file="${input##*/}"
+if [[ "$dir" == "$input" ]]; then
+  dir="."
+fi
+
+stem="${file%.*}"
+if [[ -z "$stem" || "$stem" == "$file" ]]; then
+  stem="$file"
+fi
+
+output="$dir/${stem}_shareable.mp4"
+
+if [[ -e "$output" ]]; then
+  printf 'sharevid: output already exists: %s\n' "$output" >&2
+  exit 1
+fi
+
+ffmpeg -i "$input" \
+  -c:v libx264 \
+  -preset medium \
+  -crf "$crf" \
+  -pix_fmt yuv420p \
+  -movflags +faststart \
+  -c:a copy \
+  "$output"
