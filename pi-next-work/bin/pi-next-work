@@ -1,0 +1,970 @@
+#!/usr/bin/env node
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const STATE_VERSION = 1;
+const DEFAULT_MAX_CANDIDATES = 5;
+const DEFAULT_CODEX_TIMEOUT_MS = 12 * 60 * 1000;
+
+function usage() {
+  return `Usage:
+  pi-next-work scout --project <path> [--json]
+  pi-next-work list --project <path> [--json]
+  pi-next-work launch --project <path> --id <candidate-id> [--json] [--dry-run] [--no-tmux]
+  pi-next-work cleanup-list --project <path> [--json]
+  pi-next-work cleanup --project <path> --id <candidate-id> [--json] [--dry-run] [--delete-branch] [--force]
+
+scout reads optional JSON context from stdin. State is stored under
+$XDG_STATE_HOME/pi-next-work or ~/.local/state/pi-next-work.`;
+}
+
+function fail(message, code = 1) {
+  console.error(message);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const opts = { json: false, dryRun: false, tmux: true };
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--help' || arg === '-h') {
+      console.log(usage());
+      process.exit(0);
+    } else if (arg === '--json') {
+      opts.json = true;
+    } else if (arg === '--dry-run') {
+      opts.dryRun = true;
+    } else if (arg === '--no-tmux') {
+      opts.tmux = false;
+    } else if (arg === '--delete-branch') {
+      opts.deleteBranch = true;
+    } else if (arg === '--force') {
+      opts.force = true;
+    } else if (arg === '--project') {
+      opts.project = argv[++i];
+    } else if (arg === '--id') {
+      opts.id = argv[++i];
+    } else if (arg === '--max') {
+      opts.max = Number(argv[++i]);
+    } else {
+      positional.push(arg);
+    }
+  }
+  opts.command = positional[0];
+  return opts;
+}
+
+function printResult(result, json) {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (!result.ok) {
+    console.error(result.error || 'pi-next-work failed');
+    process.exit(1);
+  }
+
+  if (result.command === 'list' || result.command === 'scout') {
+    const candidates = result.candidates || [];
+    console.log(`${candidates.length} next-work candidate${candidates.length === 1 ? '' : 's'}`);
+    for (const item of candidates) {
+      console.log(`- ${item.id} [${item.risk}/${item.size}] ${item.title}`);
+      if (item.nonOverlapReason) console.log(`  ${item.nonOverlapReason}`);
+    }
+    if (result.error) console.log(`Latest scout error: ${result.error}`);
+    return;
+  }
+
+  if (result.command === 'launch') {
+    console.log(`Worktree: ${result.worktreePath}`);
+    console.log(`Branch:   ${result.branch}`);
+    if (result.tmux?.started) console.log(`Started tmux ${result.tmux.kind}: ${result.tmux.target}`);
+    else console.log(`Run: ${result.commandLine}`);
+  }
+
+  if (result.command === 'cleanup-list') {
+    const items = result.items || [];
+    console.log(`${items.length} launched next-work item${items.length === 1 ? '' : 's'}`);
+    for (const item of items) {
+      console.log(`- ${item.id} [${item.exists ? item.dirty ? 'dirty' : 'clean' : 'missing'}] ${item.title}`);
+      console.log(`  ${item.worktreePath || '(no worktree path)'}`);
+      if (item.branch) console.log(`  ${item.branch}`);
+    }
+  }
+
+  if (result.command === 'cleanup') {
+    console.log(`${result.dryRun ? 'Would clean' : 'Cleaned'}: ${result.title}`);
+    if (result.worktreeRemoved) console.log(`Removed worktree: ${result.worktreePath}`);
+    if (result.branchDeleted) console.log(`Deleted branch: ${result.branch}`);
+  }
+}
+
+function expandPath(input) {
+  if (!input || typeof input !== 'string') fail('path must be a string');
+  if (input === '~') return os.homedir();
+  if (input.startsWith('~/')) return path.join(os.homedir(), input.slice(2));
+  return path.resolve(input);
+}
+
+function run(command, args, options = {}) {
+  return spawnSync(command, args, {
+    encoding: 'utf8',
+    maxBuffer: 25 * 1024 * 1024,
+    ...options,
+  });
+}
+
+function runGit(project, args, options = {}) {
+  return run('git', ['-C', project, ...args], options);
+}
+
+function gitOutput(project, args, fallback = '') {
+  const result = runGit(project, args);
+  if (result.status !== 0) return fallback;
+  return (result.stdout || '').trim();
+}
+
+function requireGitOutput(project, args, label) {
+  const result = runGit(project, args);
+  if (result.status !== 0) {
+    throw new Error(`${label} failed: ${result.stderr || result.stdout || result.status}`.trim());
+  }
+  return (result.stdout || '').trim();
+}
+
+function getProjectInfo(projectPath) {
+  const project = fs.realpathSync.native(expandPath(projectPath));
+  if (!fs.statSync(project).isDirectory()) throw new Error(`not a directory: ${project}`);
+
+  const rootText = requireGitOutput(project, ['rev-parse', '--show-toplevel'], 'git rev-parse --show-toplevel');
+  const root = fs.realpathSync.native(rootText);
+  const commonDirText = requireGitOutput(root, ['rev-parse', '--git-common-dir'], 'git rev-parse --git-common-dir');
+  const commonDir = fs.realpathSync.native(path.isAbsolute(commonDirText) ? commonDirText : path.join(root, commonDirText));
+  const branch = gitOutput(root, ['rev-parse', '--abbrev-ref', 'HEAD'], 'unknown');
+  const head = gitOutput(root, ['rev-parse', '--short', 'HEAD'], 'unknown');
+  return { project, root, commonDir, branch, head };
+}
+
+function stateRoot() {
+  return path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'pi-next-work');
+}
+
+function hashText(text, length = 12) {
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, length);
+}
+
+function stateDir(info) {
+  const name = `${path.basename(info.root)}-${hashText(info.commonDir)}`;
+  return path.join(stateRoot(), name);
+}
+
+function latestPath(info) {
+  return path.join(stateDir(info), 'latest.json');
+}
+
+function loadLatest(info) {
+  try {
+    return JSON.parse(fs.readFileSync(latestPath(info), 'utf8'));
+  } catch {
+    return {
+      version: STATE_VERSION,
+      projectRoot: info.root,
+      commonDir: info.commonDir,
+      generatedAt: null,
+      candidates: [],
+      rejected: [],
+    };
+  }
+}
+
+function saveLatest(info, state) {
+  fs.mkdirSync(stateDir(info), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(latestPath(info), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+function readStdinJson() {
+  if (process.stdin.isTTY) return {};
+  const input = fs.readFileSync(0, 'utf8').trim();
+  if (!input) return {};
+  try {
+    return JSON.parse(input);
+  } catch {
+    return { conversation: input };
+  }
+}
+
+function parseStatusFiles(statusShort) {
+  const files = [];
+  for (const line of statusShort.split('\n')) {
+    if (!line.trim()) continue;
+    const raw = line.slice(3).trim();
+    if (!raw) continue;
+    if (raw.includes(' -> ')) files.push(...raw.split(' -> ').map((part) => part.trim()).filter(Boolean));
+    else files.push(raw);
+  }
+  return [...new Set(files.map(normalizeRepoPath).filter(Boolean))];
+}
+
+function normalizeRepoPath(input) {
+  if (!input || typeof input !== 'string') return '';
+  let value = input.trim();
+  value = value.replace(/^['"]|['"]$/g, '');
+  value = value.replace(/^\.\//, '');
+  while (value.startsWith('/')) value = value.slice(1);
+  return value;
+}
+
+function isSameOrNested(a, b) {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function collectSnapshot(info, context) {
+  const statusResult = runGit(info.root, ['status', '--short']);
+  const statusShort = statusResult.status === 0 ? (statusResult.stdout || '').replace(/\s+$/g, '') : '';
+  const dirtyFiles = parseStatusFiles(statusShort);
+  const recentFiles = gitOutput(info.root, ['diff', '--name-only', 'HEAD~5..HEAD'], '')
+    .split('\n')
+    .map(normalizeRepoPath)
+    .filter(Boolean)
+    .slice(0, 80);
+  const activeFiles = [
+    ...dirtyFiles,
+    ...((context.activeFiles || []).map(normalizeRepoPath).filter(Boolean)),
+  ];
+
+  return {
+    projectRoot: info.root,
+    branch: info.branch,
+    head: info.head,
+    statusShort,
+    dirtyFiles: [...new Set(dirtyFiles)],
+    recentFiles: [...new Set(recentFiles)],
+    activeFiles: [...new Set(activeFiles)],
+    currentWorkSummary: String(context.currentWorkSummary || '').trim(),
+    conversation: String(context.conversation || '').trim(),
+  };
+}
+
+function buildScoutPrompt(snapshot, maxCandidates) {
+  const activeFiles = snapshot.activeFiles.length ? snapshot.activeFiles.join('\n') : '(none detected)';
+  const dirtyFiles = snapshot.dirtyFiles.length ? snapshot.dirtyFiles.join('\n') : '(none)';
+  const recentFiles = snapshot.recentFiles.length ? snapshot.recentFiles.join('\n') : '(none detected)';
+  const status = snapshot.statusShort.trim() || '(clean)';
+  const currentWork = snapshot.currentWorkSummary || '(no explicit current-work summary available)';
+  const conversation = snapshot.conversation || '(no recent conversation excerpt available)';
+
+  return `You are a background scout for a coding agent. Your job is to find useful follow-up improvements for this repository that do not overlap with the current active work.
+
+Repository:
+- Root: ${snapshot.projectRoot}
+- Branch: ${snapshot.branch}
+- HEAD: ${snapshot.head}
+
+Current active work summary:
+${currentWork}
+
+Files that are dirty or inferred as active. Do not propose work that would touch these files or the same behavior:
+${activeFiles}
+
+Git status:
+${status}
+
+Dirty files:
+${dirtyFiles}
+
+Recently changed files:
+${recentFiles}
+
+Recent Pi conversation excerpt:
+${conversation}
+
+Instructions:
+1. Inspect the repository as needed, but do not modify files.
+2. Propose at most ${maxCandidates} follow-up improvements.
+3. Each proposal must be useful, concrete, and intentionally non-overlapping with the active work.
+4. Prefer small or medium tasks that can fit in their own branch/worktree.
+5. Avoid generic cleanup unless you can name the exact likely files and benefit.
+6. For likelyFiles, list repo-relative paths or directories the next agent would probably inspect or edit.
+7. If you cannot find a clearly non-overlapping task, return an empty candidates array.
+
+Return JSON matching this shape:
+{
+  "currentWorkSummary": "short summary of the active work to avoid",
+  "candidates": [
+    {
+      "title": "short issue title",
+      "rationale": "why this is worth doing",
+      "nonOverlapReason": "why this avoids the current work",
+      "likelyFiles": ["repo/relative/path"],
+      "risk": "low|medium|high",
+      "size": "small|medium|large",
+      "starterPrompt": "self-contained prompt for a fresh agent"
+    }
+  ]
+}`;
+}
+
+function outputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      currentWorkSummary: { type: 'string' },
+      candidates: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            title: { type: 'string' },
+            rationale: { type: 'string' },
+            nonOverlapReason: { type: 'string' },
+            likelyFiles: { type: 'array', items: { type: 'string' } },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            size: { type: 'string', enum: ['small', 'medium', 'large'] },
+            starterPrompt: { type: 'string' },
+          },
+          required: ['title', 'rationale', 'nonOverlapReason', 'likelyFiles', 'risk', 'size', 'starterPrompt'],
+        },
+      },
+    },
+    required: ['currentWorkSummary', 'candidates'],
+  };
+}
+
+function parseJsonLoose(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) throw new Error('empty JSON output');
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
+  if (fenced) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {}
+  }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+  throw new Error('could not parse JSON output');
+}
+
+function runCodexScout(info, prompt) {
+  if (process.env.PI_NEXT_WORK_STUB === '1') {
+    return {
+      raw: {
+        currentWorkSummary: 'stubbed scout run',
+        candidates: [
+          {
+            title: 'Document the next-work workflow',
+            rationale: 'A short usage note would make the new Pi workflow easier to evaluate and revise.',
+            nonOverlapReason: 'This touches documentation only and avoids active implementation files.',
+            likelyFiles: ['README.md', 'pi/.pi/agent/AGENTS.md'],
+            risk: 'low',
+            size: 'small',
+            starterPrompt: 'Document how to use the Pi next-work scout and launcher.',
+          },
+        ],
+      },
+      exitCode: 0,
+      stdout: '',
+      stderr: 'stubbed by PI_NEXT_WORK_STUB=1',
+    };
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-next-work-'));
+  const schemaPath = path.join(tmpDir, 'schema.json');
+  const outputPath = path.join(tmpDir, 'last-message.json');
+  fs.writeFileSync(schemaPath, `${JSON.stringify(outputSchema(), null, 2)}\n`, { mode: 0o600 });
+
+  const args = [
+    'exec',
+    '--cd', info.root,
+    '--sandbox', 'read-only',
+    '--ephemeral',
+    '--output-schema', schemaPath,
+    '--output-last-message', outputPath,
+  ];
+  if (process.env.PI_NEXT_WORK_MODEL) args.push('--model', process.env.PI_NEXT_WORK_MODEL);
+  args.push('-');
+
+  const timeout = Number(process.env.PI_NEXT_WORK_CODEX_TIMEOUT_MS || DEFAULT_CODEX_TIMEOUT_MS);
+  const result = run('codex', args, { input: prompt, timeout });
+  let text = '';
+  try {
+    text = fs.readFileSync(outputPath, 'utf8');
+  } catch {
+    text = result.stdout || '';
+  }
+
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {}
+
+  return {
+    raw: parseJsonLoose(text),
+    exitCode: result.status ?? 1,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
+}
+
+function normalizeCandidate(candidate, snapshot, index) {
+  const title = String(candidate.title || '').trim();
+  if (!title) return null;
+
+  const likelyFiles = Array.isArray(candidate.likelyFiles)
+    ? candidate.likelyFiles.map(normalizeRepoPath).filter(Boolean)
+    : [];
+  const risk = ['low', 'medium', 'high'].includes(candidate.risk) ? candidate.risk : 'medium';
+  const size = ['small', 'medium', 'large'].includes(candidate.size) ? candidate.size : 'medium';
+  const overlapFiles = likelyFiles.filter((file) => snapshot.activeFiles.some((active) => isSameOrNested(file, active)));
+  const id = hashText(`${Date.now()}:${index}:${title}:${candidate.rationale || ''}`, 14);
+
+  return {
+    id,
+    title,
+    rationale: String(candidate.rationale || '').trim(),
+    nonOverlapReason: String(candidate.nonOverlapReason || '').trim(),
+    likelyFiles,
+    risk,
+    size,
+    starterPrompt: String(candidate.starterPrompt || '').trim(),
+    overlapFiles,
+    status: 'open',
+  };
+}
+
+function normalizeScoutResult(info, snapshot, codexResult, maxCandidates) {
+  const rawCandidates = Array.isArray(codexResult.raw?.candidates) ? codexResult.raw.candidates : [];
+  const candidates = [];
+  const rejected = [];
+
+  rawCandidates.forEach((raw, index) => {
+    const candidate = normalizeCandidate(raw, snapshot, index);
+    if (!candidate) return;
+    if (candidate.overlapFiles.length > 0) {
+      rejected.push({
+        title: candidate.title,
+        reason: `likely files overlap active work: ${candidate.overlapFiles.join(', ')}`,
+        likelyFiles: candidate.likelyFiles,
+      });
+      return;
+    }
+    candidates.push(candidate);
+  });
+
+  return {
+    version: STATE_VERSION,
+    projectRoot: info.root,
+    commonDir: info.commonDir,
+    running: false,
+    generatedAt: new Date().toISOString(),
+    currentWorkSummary: String(codexResult.raw?.currentWorkSummary || snapshot.currentWorkSummary || '').trim(),
+    snapshot,
+    codex: {
+      exitCode: codexResult.exitCode,
+      stderrTail: (codexResult.stderr || '').slice(-4000),
+    },
+    candidates: candidates.slice(0, maxCandidates),
+    rejected,
+  };
+}
+
+function scout(opts) {
+  const info = getProjectInfo(opts.project || process.cwd());
+  const context = readStdinJson();
+  const maxCandidates = Number.isFinite(opts.max) && opts.max > 0
+    ? Math.floor(opts.max)
+    : Number(process.env.PI_NEXT_WORK_MAX_CANDIDATES || DEFAULT_MAX_CANDIDATES);
+  const snapshot = collectSnapshot(info, context);
+  const prompt = buildScoutPrompt(snapshot, maxCandidates);
+  const startedAt = new Date().toISOString();
+
+  saveLatest(info, {
+    ...loadLatest(info),
+    version: STATE_VERSION,
+    projectRoot: info.root,
+    commonDir: info.commonDir,
+    running: true,
+    startedAt,
+    snapshot,
+    currentWorkSummary: snapshot.currentWorkSummary,
+    error: undefined,
+  });
+
+  let codexResult;
+  try {
+    codexResult = runCodexScout(info, prompt);
+  } catch (error) {
+    const state = {
+      ...loadLatest(info),
+      version: STATE_VERSION,
+      projectRoot: info.root,
+      commonDir: info.commonDir,
+      running: false,
+      generatedAt: new Date().toISOString(),
+      startedAt,
+      snapshot,
+      error: error?.message || String(error),
+    };
+    saveLatest(info, state);
+    return { ok: false, command: 'scout', stateFile: latestPath(info), error: state.error, candidates: state.candidates || [] };
+  }
+
+  const state = normalizeScoutResult(info, snapshot, codexResult, maxCandidates);
+  state.startedAt = startedAt;
+  saveLatest(info, state);
+  return {
+    ok: true,
+    command: 'scout',
+    stateFile: latestPath(info),
+    generatedAt: state.generatedAt,
+    startedAt,
+    candidates: state.candidates,
+    rejected: state.rejected,
+    codexExitCode: codexResult.exitCode,
+  };
+}
+
+function list(opts) {
+  const info = getProjectInfo(opts.project || process.cwd());
+  const state = loadLatest(info);
+  return {
+    ok: true,
+    command: 'list',
+    stateFile: latestPath(info),
+    generatedAt: state.generatedAt,
+    startedAt: state.startedAt,
+    running: Boolean(state.running),
+    candidates: state.candidates || [],
+    rejected: state.rejected || [],
+    error: state.error,
+  };
+}
+
+function slugify(text, fallback = 'task') {
+  const slug = String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return slug || fallback;
+}
+
+function uniqueWorktreePath(root, slug, id) {
+  const parent = path.dirname(root);
+  const base = `${path.basename(root)}-${slug}-${id.slice(0, 8)}`;
+  let candidate = path.join(parent, base);
+  let n = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(parent, `${base}-${n++}`);
+  }
+  return candidate;
+}
+
+function branchExists(root, branch) {
+  return runGit(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+}
+
+function uniqueBranch(root, slug, id) {
+  const base = `next/${slug}-${id.slice(0, 8)}`;
+  let branch = base;
+  let n = 2;
+  while (branchExists(root, branch)) branch = `${base}-${n++}`;
+  return branch;
+}
+
+function buildLaunchPrompt(candidate, state, worktreePath, branch) {
+  const likelyFiles = candidate.likelyFiles?.length ? candidate.likelyFiles.join('\n') : '(none named)';
+  const starter = candidate.starterPrompt || candidate.title;
+
+  return `You are starting a focused follow-up task selected by the user.
+
+Fresh worktree:
+- Host path: ${worktreePath}
+- Pi sandbox path: /workspace
+- Branch: ${branch}
+
+Important path note:
+Pi starts inside a sandbox. The host worktree above is mounted at /workspace inside the agent session. Use /workspace, or relative paths from the current directory, for all file inspection and edits. Do not treat the host path as missing work; it is expected not to exist inside the sandbox.
+
+Selected issue:
+- Title: ${candidate.title}
+- Risk: ${candidate.risk}
+- Size: ${candidate.size}
+
+Rationale:
+${candidate.rationale || '(none provided)'}
+
+Likely files or directories:
+${likelyFiles}
+
+Task brief:
+${starter}
+
+Before editing any files:
+1. Inspect the repository and the likely files/directories.
+2. Tell me the concrete plan and the files you expect to touch.
+3. Ask me to approve before making changes.
+
+Do not edit files, run formatters that write, create commits, or change the worktree until I approve.`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function hasCommand(command) {
+  return run('bash', ['-lc', `command -v ${shellQuote(command)} >/dev/null 2>&1`]).status === 0;
+}
+
+function writeLaunchFiles(info, candidate, state, worktreePath, branch) {
+  const dir = path.join(stateDir(info), 'launches', candidate.id);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const promptPath = path.join(dir, 'prompt.md');
+  const scriptPath = path.join(dir, 'launch.sh');
+  const prompt = buildLaunchPrompt(candidate, state, worktreePath, branch);
+
+  fs.writeFileSync(promptPath, prompt, { mode: 0o600 });
+  fs.writeFileSync(scriptPath, `#!/usr/bin/env bash
+set -euo pipefail
+cd ${shellQuote(worktreePath)}
+prompt="$(cat ${shellQuote(promptPath)})"
+exec pi "$prompt"
+`, { mode: 0o700 });
+
+  return { promptPath, scriptPath, prompt };
+}
+
+function startTmux(scriptPath, worktreePath, candidate) {
+  if (!process.env.TMUX || !hasCommand('tmux')) return { started: false, reason: 'tmux is not available' };
+
+  const mode = process.env.PI_NEXT_WORK_TMUX_MODE || 'window';
+  const name = `next-${slugify(candidate.title, 'work').slice(0, 32)}`;
+  if (mode === 'split') {
+    const result = run('tmux', ['split-window', '-P', '-F', '#{pane_id}', '-c', worktreePath, scriptPath]);
+    if (result.status !== 0) throw new Error(`tmux split-window failed: ${result.stderr || result.stdout || result.status}`.trim());
+    return { started: true, kind: 'pane', target: result.stdout.trim() };
+  }
+
+  const result = run('tmux', ['new-window', '-P', '-F', '#{window_id}', '-n', name, '-c', worktreePath, scriptPath]);
+  if (result.status !== 0) throw new Error(`tmux new-window failed: ${result.stderr || result.stdout || result.status}`.trim());
+  return { started: true, kind: 'window', target: result.stdout.trim(), name };
+}
+
+function findCandidate(state, id) {
+  const candidates = state.candidates || [];
+  return candidates.find((candidate) => candidate.id === id)
+    || candidates.find((candidate) => candidate.id.startsWith(id));
+}
+
+function worktreeExists(worktreePath) {
+  return Boolean(worktreePath && fs.existsSync(worktreePath) && fs.statSync(worktreePath).isDirectory());
+}
+
+function worktreeDirty(worktreePath) {
+  if (!worktreeExists(worktreePath)) return false;
+  const result = runGit(worktreePath, ['status', '--porcelain']);
+  if (result.status !== 0) return true;
+  return Boolean((result.stdout || '').trim());
+}
+
+function titleFromBranch(branch, worktreePath) {
+  const raw = branch?.startsWith('next/')
+    ? branch.slice('next/'.length).replace(/-[a-f0-9]{8,14}$/i, '')
+    : path.basename(worktreePath || 'next-work');
+  return raw
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+    .join(' ') || 'Next-work item';
+}
+
+function parseWorktreePorcelain(output) {
+  return output
+    .trim()
+    .split(/\n\n+/)
+    .filter(Boolean)
+    .map((record) => {
+      const item = {};
+      for (const line of record.split('\n')) {
+        const [key, ...rest] = line.split(' ');
+        const value = rest.join(' ');
+        if (key === 'worktree') item.worktreePath = value;
+        if (key === 'branch') item.branch = value.replace(/^refs\/heads\//, '');
+        if (key === 'HEAD') item.head = value;
+      }
+      return item;
+    });
+}
+
+function nextWorkWorktrees(info) {
+  const result = runGit(info.root, ['worktree', 'list', '--porcelain']);
+  if (result.status !== 0) return [];
+  const rootBase = `${path.basename(info.root)}-`;
+  return parseWorktreePorcelain(result.stdout || '')
+    .filter((item) => {
+      if (!item.worktreePath) return false;
+      try {
+        return fs.realpathSync.native(item.worktreePath) !== info.root;
+      } catch {
+        return item.worktreePath !== info.root;
+      }
+    })
+    .filter((item) => item.branch?.startsWith('next/') || path.basename(item.worktreePath).startsWith(rootBase));
+}
+
+function cleanupInventory(info, state) {
+  const itemsByKey = new Map();
+  const put = (item) => {
+    const key = item.id || item.branch || item.worktreePath;
+    if (!key) return;
+    itemsByKey.set(key, { ...(itemsByKey.get(key) || {}), ...item });
+  };
+
+  for (const candidate of state.candidates || []) {
+    if (candidate.status === 'cleaned') continue;
+    if (!(candidate.status === 'launched' || candidate.worktreePath || candidate.branch)) continue;
+    put({
+      id: candidate.id,
+      title: candidate.title,
+      status: candidate.status,
+      branch: candidate.branch,
+      worktreePath: candidate.worktreePath,
+      launchedAt: candidate.launchedAt,
+      promptPath: candidate.promptPath,
+      candidate,
+      source: 'state',
+    });
+  }
+
+  for (const worktree of nextWorkWorktrees(info)) {
+    const matchingCandidate = (state.candidates || []).find((candidate) =>
+      candidate.worktreePath === worktree.worktreePath || candidate.branch === worktree.branch
+    );
+    put({
+      id: matchingCandidate?.id || hashText(`${worktree.branch || ''}:${worktree.worktreePath}`, 14),
+      title: matchingCandidate?.title || titleFromBranch(worktree.branch, worktree.worktreePath),
+      status: matchingCandidate?.status || 'discovered',
+      branch: worktree.branch,
+      worktreePath: worktree.worktreePath,
+      launchedAt: matchingCandidate?.launchedAt,
+      promptPath: matchingCandidate?.promptPath,
+      candidate: matchingCandidate,
+      source: matchingCandidate ? 'state+git' : 'git',
+    });
+  }
+
+  return [...itemsByKey.values()].map((item) => {
+    const exists = worktreeExists(item.worktreePath);
+    return {
+      ...item,
+      exists,
+      dirty: exists ? worktreeDirty(item.worktreePath) : false,
+    };
+  });
+}
+
+function cleanupItems(opts) {
+  const info = getProjectInfo(opts.project || process.cwd());
+  const state = loadLatest(info);
+  const items = cleanupInventory(info, state).map(({ candidate, ...item }) => item);
+
+  return {
+    ok: true,
+    command: 'cleanup-list',
+    stateFile: latestPath(info),
+    items,
+  };
+}
+
+function branchCheckedOutInWorktree(root, branch) {
+  if (!branch) return false;
+  const result = runGit(root, ['worktree', 'list', '--porcelain']);
+  if (result.status !== 0) return false;
+  const records = (result.stdout || '').split(/\n\n+/);
+  return records.some((record) => record.split('\n').some((line) => line === `branch refs/heads/${branch}`));
+}
+
+function removeLaunchArtifacts(info, candidate) {
+  const launchDir = path.join(stateDir(info), 'launches', candidate.id);
+  try {
+    fs.rmSync(launchDir, { recursive: true, force: true });
+    return launchDir;
+  } catch {
+    return undefined;
+  }
+}
+
+function cleanup(opts) {
+  if (!opts.id) throw new Error('cleanup requires --id <candidate-id>');
+
+  const info = getProjectInfo(opts.project || process.cwd());
+  const state = loadLatest(info);
+  const item = cleanupInventory(info, state).find((entry) => entry.id === opts.id || entry.id?.startsWith(opts.id));
+  if (!item) throw new Error(`cleanup item not found: ${opts.id}`);
+  const candidate = item.candidate || {
+    id: item.id,
+    title: item.title,
+    branch: item.branch,
+    worktreePath: item.worktreePath,
+  };
+
+  const exists = worktreeExists(candidate.worktreePath);
+  const dirty = exists ? worktreeDirty(candidate.worktreePath) : false;
+  if (dirty && !opts.force) {
+    throw new Error(`refusing to remove dirty worktree: ${candidate.worktreePath}`);
+  }
+
+  const branch = candidate.branch;
+  const branchExistsNow = branch ? branchExists(info.root, branch) : false;
+  const branchCheckedOut = branchExistsNow ? branchCheckedOutInWorktree(info.root, branch) : false;
+
+  if (opts.dryRun) {
+    return {
+      ok: true,
+      command: 'cleanup',
+      dryRun: true,
+      id: candidate.id,
+      title: candidate.title,
+      worktreePath: candidate.worktreePath,
+      branch,
+      exists,
+      dirty,
+      wouldRemoveWorktree: exists,
+      wouldDeleteBranch: Boolean(opts.deleteBranch && branchExistsNow && !branchCheckedOut),
+      branchCheckedOut,
+    };
+  }
+
+  let worktreeRemoved = false;
+  if (exists) {
+    const args = ['worktree', 'remove'];
+    if (opts.force) args.push('--force');
+    args.push(candidate.worktreePath);
+    const remove = runGit(info.root, args);
+    if (remove.status !== 0) throw new Error(`git worktree remove failed: ${remove.stderr || remove.stdout || remove.status}`.trim());
+    worktreeRemoved = true;
+  }
+
+  let branchDeleted = false;
+  if (opts.deleteBranch && branch && branchExists(info.root, branch)) {
+    if (branchCheckedOutInWorktree(info.root, branch)) {
+      throw new Error(`refusing to delete checked-out branch: ${branch}`);
+    }
+    const del = runGit(info.root, ['branch', '-D', branch]);
+    if (del.status !== 0) throw new Error(`git branch -D failed: ${del.stderr || del.stdout || del.status}`.trim());
+    branchDeleted = true;
+  }
+
+  const artifactDir = removeLaunchArtifacts(info, candidate);
+  candidate.status = 'cleaned';
+  candidate.cleanedAt = new Date().toISOString();
+  candidate.worktreeRemoved = worktreeRemoved;
+  candidate.branchDeleted = branchDeleted;
+  state.candidates = (state.candidates || []).map((item) => item.id === candidate.id ? candidate : item);
+  saveLatest(info, state);
+
+  return {
+    ok: true,
+    command: 'cleanup',
+    id: candidate.id,
+    title: candidate.title,
+    worktreePath: candidate.worktreePath,
+    branch,
+    worktreeRemoved,
+    branchDeleted,
+    artifactDir,
+  };
+}
+
+function launch(opts) {
+  if (!opts.id) throw new Error('launch requires --id <candidate-id>');
+
+  const info = getProjectInfo(opts.project || process.cwd());
+  const state = loadLatest(info);
+  const candidate = findCandidate(state, opts.id);
+  if (!candidate) throw new Error(`candidate not found: ${opts.id}`);
+  if (candidate.status === 'launched' && candidate.worktreePath && !opts.dryRun) {
+    throw new Error(`candidate already launched at ${candidate.worktreePath}`);
+  }
+
+  const slug = slugify(candidate.title);
+  const branch = uniqueBranch(info.root, slug, candidate.id);
+  const worktreePath = uniqueWorktreePath(info.root, slug, candidate.id);
+
+  if (opts.dryRun) {
+    return {
+      ok: true,
+      command: 'launch',
+      dryRun: true,
+      id: candidate.id,
+      title: candidate.title,
+      branch,
+      worktreePath,
+      prompt: buildLaunchPrompt(candidate, state, worktreePath, branch),
+    };
+  }
+
+  const add = runGit(info.root, ['worktree', 'add', '-b', branch, worktreePath]);
+  if (add.status !== 0) throw new Error(`git worktree add failed: ${add.stderr || add.stdout || add.status}`.trim());
+
+  const files = writeLaunchFiles(info, candidate, state, worktreePath, branch);
+  const tmux = opts.tmux ? startTmux(files.scriptPath, worktreePath, candidate) : { started: false, reason: '--no-tmux' };
+  const commandLine = `cd ${shellQuote(worktreePath)} && ${shellQuote(files.scriptPath)}`;
+
+  candidate.status = 'launched';
+  candidate.launchedAt = new Date().toISOString();
+  candidate.branch = branch;
+  candidate.worktreePath = worktreePath;
+  candidate.promptPath = files.promptPath;
+  state.candidates = (state.candidates || []).map((item) => item.id === candidate.id ? candidate : item);
+  saveLatest(info, state);
+
+  return {
+    ok: true,
+    command: 'launch',
+    id: candidate.id,
+    title: candidate.title,
+    branch,
+    worktreePath,
+    promptPath: files.promptPath,
+    launchScriptPath: files.scriptPath,
+    tmux,
+    commandLine,
+  };
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  if (!opts.command) fail(usage(), 2);
+
+  let result;
+  try {
+    if (opts.command === 'scout') result = scout(opts);
+    else if (opts.command === 'list') result = list(opts);
+    else if (opts.command === 'launch') result = launch(opts);
+    else if (opts.command === 'cleanup-list') result = cleanupItems(opts);
+    else if (opts.command === 'cleanup') result = cleanup(opts);
+    else fail(`unknown command: ${opts.command}\n\n${usage()}`, 2);
+  } catch (error) {
+    result = { ok: false, command: opts.command, error: error?.message || String(error) };
+  }
+
+  printResult(result, opts.json);
+  if (!result.ok) process.exit(1);
+}
+
+main();
