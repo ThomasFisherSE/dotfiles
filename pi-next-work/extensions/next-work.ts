@@ -142,9 +142,29 @@ function shortPath(p: string): string {
   return p;
 }
 
-function setStatus(ctx: any, text: string, color = "dim") {
-  const theme = ctx.ui?.theme;
-  ctx.ui?.setStatus?.(statusKey, theme?.fg ? theme.fg(color, text) : text);
+function isStaleContextError(error: any): boolean {
+  return String(error?.message || error).includes("extension ctx is stale");
+}
+
+function setStatus(ctx: any, text: string, color = "dim"): boolean {
+  try {
+    const theme = ctx.ui?.theme;
+    ctx.ui?.setStatus?.(statusKey, theme?.fg ? theme.fg(color, text) : text);
+    return true;
+  } catch (error) {
+    if (isStaleContextError(error)) return false;
+    throw error;
+  }
+}
+
+function notify(ctx: any, message: string, level: "info" | "warning" | "error" = "info"): boolean {
+  try {
+    ctx.ui.notify(message, level);
+    return true;
+  } catch (error) {
+    if (isStaleContextError(error)) return false;
+    throw error;
+  }
 }
 
 function textFromContent(content: any): string {
@@ -229,18 +249,19 @@ function buildScoutContext(ctx: any) {
 }
 
 async function nextWork<T>(command: string, ctx: any, extra: Record<string, unknown> = {}): Promise<T> {
+  const projectPath = String(extra.projectPath || hostProject(ctx));
   const request = {
     action: "next_work",
     command,
-    projectPath: hostProject(ctx),
     ...extra,
+    projectPath,
   };
 
   try {
     return await brokerRequest<T>(request);
   } catch (error) {
     if (process.env.PI_SANDBOX === "1") throw error;
-    return await directNextWork<T>(command, ctx, extra);
+    return await directNextWork<T>(command, ctx, { ...extra, projectPath });
   }
 }
 
@@ -252,7 +273,8 @@ function directNextWork<T>(command: string, ctx: any, extra: Record<string, unkn
       "pi-next-work",
     ]
       .find((candidate) => candidate === "pi-next-work" || fs.existsSync(candidate));
-    const args = [command, "--project", hostProject(ctx), "--json"];
+    const projectPath = String(extra.projectPath || hostProject(ctx));
+    const args = [command, "--project", projectPath, "--json"];
     if (command === "launch" || command === "cleanup") args.push("--id", String(extra.id || ""));
     if (command === "cleanup" && extra.deleteBranch) args.push("--delete-branch");
     if (command === "cleanup" && extra.force) args.push("--force");
@@ -285,18 +307,31 @@ function directNextWork<T>(command: string, ctx: any, extra: Record<string, unkn
   });
 }
 
-async function refreshStatus(ctx: any) {
+async function refreshStatus(ctx: any): Promise<ListResult | undefined> {
   try {
     const result = await nextWork<ListResult>("list", ctx);
     if (result.running) {
       setStatus(ctx, "Next: scouting", "accent");
-      return;
+      return result;
     }
     const open = (result.candidates || []).filter((candidate) => candidate.status !== "launched").length;
     setStatus(ctx, open > 0 ? `Next: ${open}` : "Next: none");
+    return result;
   } catch {
     setStatus(ctx, "Next: unavailable", "warning");
+    return undefined;
   }
+}
+
+function notifySavedCandidates(ctx: any, result: ListResult | undefined) {
+  if (!result || result.running) return;
+  const open = (result.candidates || []).filter((candidate) => candidate.status !== "launched").length;
+  if (open <= 0) return;
+  notify(
+    ctx,
+    `Next-work has ${open} saved suggestion${open === 1 ? "" : "s"} from a previous scout. Run /next-work to review.`,
+    "info",
+  );
 }
 
 function maybeAutoScout(ctx: any) {
@@ -306,38 +341,45 @@ function maybeAutoScout(ctx: any) {
   if (runningScouts.has(project)) return;
   if (now - (lastScoutAt.get(project) || 0) < autoIntervalMs) return;
   lastScoutAt.set(project, now);
-  void runScout(ctx, false);
+  void runScout(ctx, false, true);
 }
 
-async function runScout(ctx: any, notify: boolean): Promise<ListResult | undefined> {
+async function runScout(ctx: any, notifyUser: boolean, notifyWhenAvailable = notifyUser): Promise<ListResult | undefined> {
   const project = hostProject(ctx);
+  const context = buildScoutContext(ctx);
   const existing = runningScouts.get(project);
   if (existing) {
-    if (notify) ctx.ui.notify("Next-work scout is already running.", "info");
+    if (notifyUser) notify(ctx, "Next-work scout is already running.", "info");
     return existing;
   }
 
   setStatus(ctx, "Next: scouting", "accent");
-  if (notify) {
-    ctx.ui.notify("Next-work scout started. This runs in the background and may take a few minutes.", "info");
+  if (notifyUser) {
+    notify(ctx, "Next-work scout started. This runs in the background and may take a few minutes.", "info");
   }
-  const run = nextWork<ListResult>("scout", ctx, { context: buildScoutContext(ctx) })
+  const run = nextWork<ListResult>("scout", ctx, { projectPath: project, context })
     .then(async (result) => {
       if (result.started || result.running) {
-        result = await waitForScout(ctx);
+        result = await waitForScout(ctx, project);
         if (!result) return undefined;
       }
       const count = (result.candidates || []).filter((candidate) => candidate.status !== "launched").length;
       setStatus(ctx, count > 0 ? `Next: ${count}` : "Next: none");
-      if (notify) {
+      if (notifyUser) {
         const suffix = count > 0 ? " Run /next-work to choose one." : "";
-        ctx.ui.notify(`Next-work scout found ${count} candidate${count === 1 ? "" : "s"}.${suffix}`, "info");
+        notify(ctx, `Next-work scout found ${count} candidate${count === 1 ? "" : "s"}.${suffix}`, "info");
+      } else if (notifyWhenAvailable && count > 0) {
+        notify(
+          ctx,
+          `Next-work found ${count} suggestion${count === 1 ? "" : "s"}. Run /next-work to review.`,
+          "info",
+        );
       }
       return result;
     })
     .catch((error) => {
       setStatus(ctx, "Next: scout failed", "warning");
-      if (notify) ctx.ui.notify(`Next-work scout failed: ${error.message || String(error)}`, "error");
+      if (notifyUser) notify(ctx, `Next-work scout failed: ${error.message || String(error)}`, "error");
       return undefined;
     })
     .finally(() => {
@@ -348,14 +390,14 @@ async function runScout(ctx: any, notify: boolean): Promise<ListResult | undefin
   return run;
 }
 
-async function waitForScout(ctx: any): Promise<ListResult | undefined> {
+async function waitForScout(ctx: any, projectPath: string): Promise<ListResult | undefined> {
   for (let i = 0; i < 240; i++) {
     await sleep(5000);
-    const current = await nextWork<ListResult>("list", ctx);
+    const current = await nextWork<ListResult>("list", ctx, { projectPath });
     if (!current.running) return current;
     setStatus(ctx, "Next: scouting", "accent");
   }
-  ctx.ui.notify("Next-work scout is still running after 20 minutes. Use /next-work status to check later.", "warning");
+  notify(ctx, "Next-work scout is still running after 20 minutes. Use /next-work status to check later.", "warning");
   return undefined;
 }
 
@@ -534,7 +576,8 @@ export default function (pi: ExtensionAPI) {
   globalState.__piNextWorkLoaded = true;
 
   pi.on("session_start", async (_event, ctx) => {
-    await refreshStatus(ctx);
+    const result = await refreshStatus(ctx);
+    notifySavedCandidates(ctx, result);
   });
 
   pi.on("turn_end", async (_event, ctx) => {
@@ -542,7 +585,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    ctx.ui.setStatus(statusKey, undefined);
+    try {
+      ctx.ui.setStatus(statusKey, undefined);
+    } catch (error) {
+      if (!isStaleContextError(error)) throw error;
+    }
     globalState.__piNextWorkLoaded = false;
   });
 
