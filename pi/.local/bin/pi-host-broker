@@ -11,6 +11,12 @@ const HOME = os.homedir();
 const SOCKET = process.env.PI_HOST_BROKER_SOCKET || path.join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`, 'pi-host-broker.sock');
 const MAX_READ_BYTES = Number(process.env.PI_HOST_BROKER_MAX_READ_BYTES || 1024 * 1024);
 const MAX_IMAGE_BYTES = Number(process.env.PI_HOST_BROKER_MAX_IMAGE_BYTES || 20 * 1024 * 1024);
+const NEXT_WORK_SCRIPT = process.env.PI_NEXT_WORK_SCRIPT || (() => {
+  const installed = path.join(HOME, '.local', 'bin', 'pi-next-work');
+  if (fs.existsSync(installed)) return installed;
+  const dotfilesCopy = path.join(HOME, 'dotfiles', 'pi-next-work', 'bin', 'pi-next-work');
+  return dotfilesCopy;
+})();
 
 const autoReadDirs = (process.env.PI_HOST_BROKER_AUTO_READ_DIRS || '~/dev:~/Projects:~/dotfiles')
   .split(':')
@@ -364,6 +370,99 @@ function stowDotfiles(req) {
   return { dotfiles, args, packages, stdout: result.stdout, stderr: result.stderr };
 }
 
+function isGitWorktree(projectPath) {
+  const result = spawnSync('git', ['-C', projectPath, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
+  return result.status === 0 && result.stdout.trim() === 'true';
+}
+
+function resolveProjectPath(p) {
+  const projectPath = resolveExisting(p);
+  if (!fs.statSync(projectPath).isDirectory()) throw new Error('project path is not a directory');
+  if (!isSubpath(projectPath, HOME)) throw new Error('project path must be under home directory');
+  for (const root of blocked) {
+    if (isSubpath(projectPath, root)) throw new Error(`blocked sensitive path: ${root}`);
+  }
+  if (!isGitWorktree(projectPath)) throw new Error('project path is not a git worktree');
+  return projectPath;
+}
+
+function runNextWork(args, input) {
+  if (!fs.existsSync(NEXT_WORK_SCRIPT)) throw new Error(`pi-next-work not found at ${NEXT_WORK_SCRIPT}`);
+  const result = spawnSync(NEXT_WORK_SCRIPT, args, {
+    input,
+    encoding: 'utf8',
+    env: process.env,
+    maxBuffer: 25 * 1024 * 1024,
+    timeout: Number(process.env.PI_NEXT_WORK_BROKER_TIMEOUT_MS || 15 * 60 * 1000),
+  });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || '{}');
+  } catch (error) {
+    throw new Error(`pi-next-work returned invalid JSON: ${error.message}\n${result.stdout || result.stderr || ''}`.trim());
+  }
+
+  if (result.status !== 0 || parsed.ok === false) {
+    throw new Error(parsed.error || result.stderr || `pi-next-work failed with status ${result.status}`);
+  }
+  return parsed;
+}
+
+function runNextWorkBackground(args, input) {
+  if (!fs.existsSync(NEXT_WORK_SCRIPT)) throw new Error(`pi-next-work not found at ${NEXT_WORK_SCRIPT}`);
+  const child = spawn(NEXT_WORK_SCRIPT, args, {
+    detached: true,
+    env: process.env,
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  child.stdin.end(input);
+  child.unref();
+  return { pid: child.pid };
+}
+
+function nextWork(req) {
+  const command = String(req.command || '');
+  const projectPath = resolveProjectPath(req.projectPath);
+
+  if (command === 'list') {
+    return runNextWork(['list', '--project', projectPath, '--json'], '');
+  }
+
+  if (command === 'scout') {
+    const context = req.context && typeof req.context === 'object' ? req.context : {};
+    const started = runNextWorkBackground(['scout', '--project', projectPath, '--json'], JSON.stringify(context));
+    let current;
+    try {
+      current = runNextWork(['list', '--project', projectPath, '--json'], '');
+    } catch {
+      current = { ok: true, command: 'scout', candidates: [] };
+    }
+    return { ...current, command: 'scout', started: true, pid: started.pid, running: true };
+  }
+
+  if (command === 'launch') {
+    const id = String(req.id || '');
+    if (!/^[a-f0-9]{6,32}$/i.test(id)) throw new Error('invalid next-work candidate id');
+    return runNextWork(['launch', '--project', projectPath, '--id', id, '--json'], '');
+  }
+
+  if (command === 'cleanup-list') {
+    return runNextWork(['cleanup-list', '--project', projectPath, '--json'], '');
+  }
+
+  if (command === 'cleanup') {
+    const id = String(req.id || '');
+    if (!/^[a-f0-9]{6,32}$/i.test(id)) throw new Error('invalid next-work candidate id');
+    const args = ['cleanup', '--project', projectPath, '--id', id, '--json'];
+    if (req.deleteBranch) args.push('--delete-branch');
+    if (req.force) args.push('--force');
+    return runNextWork(args, '');
+  }
+
+  throw new Error(`unknown next_work command: ${command}`);
+}
+
 function handle(req) {
   if (!req || typeof req !== 'object') throw new Error('request must be an object');
   if (req.action === 'ping') return { pong: true, socket: SOCKET, home: HOME };
@@ -380,6 +479,7 @@ function handle(req) {
   if (req.action === 'close_preview_pane') return closePreviewPane(req);
   if (req.action === 'balance_preview_panes') return balancePreviewPanes(req);
   if (req.action === 'stow_dotfiles') return stowDotfiles(req);
+  if (req.action === 'next_work') return nextWork(req);
   throw new Error(`unknown action: ${req.action}`);
 }
 

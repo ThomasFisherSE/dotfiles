@@ -1,0 +1,17 @@
+{
+  "name": "pi-next-work",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension for scouting and launching non-overlapping follow-up worktrees.",
+  "keywords": [
+    "pi-package"
+  ],
+  "bin": {
+    "pi-next-work": "./bin/pi-next-work"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}

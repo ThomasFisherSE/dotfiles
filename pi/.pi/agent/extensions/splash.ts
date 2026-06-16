@@ -14,7 +14,7 @@ const widgetId = "pi-splash";
 const shimmerDelayMs = 500;
 const shimmerDurationMs = 900;
 const shimmerFrameCount = 96;
-const shimmerIntervalMs = 33;
+const shimmerIntervalMs = 100;
 let showing = false;
 let animationTimer: ReturnType<typeof setInterval> | undefined;
 let animationStartedAt = 0;
@@ -145,10 +145,15 @@ function metric(theme: Theme, color: string, label: string, value: string) {
 }
 
 function shimmerPi(_theme: Theme, frame: number) {
-  const base = (s: string) => `\x1b[38;2;137;143;191m${s}\x1b[0m`;   // muted lavender / model-pill-ish
-  const mid = (s: string) => `\x1b[38;2;166;173;220m${s}\x1b[0m`;    // soft lavender
-  const glint = (s: string) => `\x1b[38;2;190;198;245m${s}\x1b[0m`;  // restrained highlight
-  const shadow = (s: string) => `\x1b[38;2;88;91;112m${s}\x1b[0m`;
+  // Style contiguous runs instead of every glyph. This keeps the animation visually
+  // the same, but dramatically reduces ANSI output per frame and avoids redraw churn.
+  const colors = {
+    base: "\x1b[38;2;137;143;191m",   // muted lavender / model-pill-ish
+    mid: "\x1b[38;2;166;173;220m",    // soft lavender
+    glint: "\x1b[38;2;190;198;245m",  // restrained highlight
+    shadow: "\x1b[38;2;88;91;112m",
+  } as const;
+  const reset = "\x1b[0m";
   const art = [
     "        ████████████████        ",
     "      ████████████████████      ",
@@ -165,17 +170,34 @@ function shimmerPi(_theme: Theme, frame: number) {
   const center = -8 + phase * 48;
   const fade = Math.sin(phase * Math.PI); // eases in/out so the loop seam is invisible
 
-  return art.map((raw, y) =>
-    raw.split("").map((char, x) => {
-      if (char === " ") return " ";
-      const diagonal = x + y * 0.75;
-      const distance = Math.abs(diagonal - center);
-      if (fade > 0.08 && distance < 0.55) return glint(char);
-      if (fade > 0.08 && distance < 1.65) return mid(char);
-      if (y >= art.length - 2 || x < 8) return shadow(char);
-      return base(char);
-    }).join(""),
-  );
+  return art.map((raw, y) => {
+    let out = "";
+    let activeColor: keyof typeof colors | undefined;
+
+    for (let x = 0; x < raw.length; x++) {
+      const char = raw[x];
+      let color: keyof typeof colors | undefined;
+
+      if (char !== " ") {
+        const diagonal = x + y * 0.75;
+        const distance = Math.abs(diagonal - center);
+        if (fade > 0.08 && distance < 0.55) color = "glint";
+        else if (fade > 0.08 && distance < 1.65) color = "mid";
+        else if (y >= art.length - 2 || x < 8) color = "shadow";
+        else color = "base";
+      }
+
+      if (color !== activeColor) {
+        if (activeColor) out += reset;
+        if (color) out += colors[color];
+        activeColor = color;
+      }
+      out += char;
+    }
+
+    if (activeColor) out += reset;
+    return out;
+  });
 }
 
 function stopAnimation() {
@@ -203,7 +225,7 @@ function showSplash(pi: ExtensionAPI, ctx: any) {
       return {
         invalidate() {},
         render(width: number): string[] {
-          const w = Math.max(28, width);
+          const w = Math.max(0, width);
           const project = shortProjectName(ctx.cwd);
           const sandbox = isSandboxed() ? theme.fg("success", "sandboxed ✓") : theme.fg("warning", "host-ish ✗");
           const vault = process.env.PI_OBSIDIAN_VAULT ? theme.fg("success", "vault mounted") : theme.fg("dim", "no vault");

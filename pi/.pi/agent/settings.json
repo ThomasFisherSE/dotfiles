@@ -14,6 +14,7 @@
   "steeringMode": "one-at-a-time",
   "quietStartup": true,
   "packages": [
-    "../../dev/pi-local-web"
+    "../../dev/pi-local-web",
+    "../../dotfiles/pi-next-work"
   ]
 }
