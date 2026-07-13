@@ -3,8 +3,8 @@ set -euo pipefail
 
 REAL_LINKER="${CARGO_LINKER_REAL:-/usr/bin/cc}"
 HEARTBEAT_SECONDS="${CARGO_LINK_HEARTBEAT_SECONDS:-30}"
-RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
-LOCK_FILE="$RUNTIME_DIR/cargo-link-$UID.lock"
+LOCK_DIR="${CARGO_LINK_LOCK_DIR:-/tmp/cargo-link-$UID}"
+LOCK_FILE="$LOCK_DIR/link.lock"
 LOCK_FD=197
 
 status() {
@@ -30,7 +30,13 @@ if ! command -v flock >/dev/null 2>&1; then
   exec "$REAL_LINKER" "$@"
 fi
 
-exec 197>"$LOCK_FILE"
+if ! mkdir -p -m 700 -- "$LOCK_DIR" 2>/dev/null \
+  || [[ ! -O "$LOCK_DIR" ]] \
+  || ! chmod 700 -- "$LOCK_DIR" 2>/dev/null \
+  || ! { exec 197>"$LOCK_FILE"; } 2>/dev/null; then
+  status "cargo-link: global linker queue is unavailable at $LOCK_DIR; linking without the concurrency limit"
+  exec "$REAL_LINKER" "$@"
+fi
 
 if ! flock -n "$LOCK_FD"; then
   status 'cargo-link: waiting for the global linker slot; another build is linking - do not cancel or retry'
