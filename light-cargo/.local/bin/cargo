@@ -6,6 +6,14 @@ ENABLED_FILE="$STATE_DIR/enabled"
 JOBS_FILE="$STATE_DIR/jobs"
 NICE_FILE="$STATE_DIR/nice"
 LOCK_FILE="$STATE_DIR/build.lock"
+LINK_STATUS_FD=198
+
+setup_link_status_channel() {
+  # rustc captures a successful linker's stderr. Give cargo-linker a separate
+  # inherited descriptor so queue messages reach the invoking terminal/agent.
+  exec 198>&2
+  export CARGO_LINK_STATUS_FD="$LINK_STATUS_FD"
+}
 
 find_real_cargo() {
   if [[ -n "${LIGHT_CARGO_REAL_CARGO:-}" && -x "${LIGHT_CARGO_REAL_CARGO:-}" ]]; then
@@ -125,6 +133,7 @@ acquire_build_lock() {
 }
 
 real_cargo="$(find_real_cargo)"
+setup_link_status_channel
 
 if [[ ! -f "$ENABLED_FILE" ]]; then
   exec "$real_cargo" "$@"

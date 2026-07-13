@@ -13,7 +13,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 | **nvim** | `.config/nvim/init.lua` | kickstart.nvim, Catppuccin Mocha, LSP + formatters |
 | **starship** | `.config/starship.toml` | Catppuccin Mocha palette, minimal git-aware prompt |
 | **tmux** | `.config/tmux/tmux.conf` | `C-a` prefix, vim-style navigation, Catppuccin theme, session persistence |
-| **light-cargo** | `.local/bin/cargo`, `.local/bin/light-cargo-builds` | Toggleable low-impact Cargo wrapper for multi-agent build sessions |
+| **light-cargo** | `.cargo/config.toml`, `.local/bin/cargo*` | Parallel Cargo builds with globally serialized, agent-visible link steps; optional whole-build throttling |
 | **pi** | `.pi/agent/`, `.local/bin/pi*` | Sandboxed Pi launcher, host broker, custom extensions, local web-tool package wiring |
 
 ## Dependencies
@@ -25,6 +25,7 @@ GNU Stow-managed dotfiles for an Arch Linux (KDE Plasma) terminal workflow. Each
 - [Starship](https://starship.rs/)
 - [eza](https://github.com/eza-community/eza), [fzf](https://github.com/junegunn/fzf), [zoxide](https://github.com/ajeetdsouza/zoxide), [yazi](https://github.com/sxyazi/yazi), [lazygit](https://github.com/jesseduffield/lazygit)
 - [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [sd](https://github.com/chmln/sd), [dust](https://github.com/bootandy/dust), [procs](https://github.com/dalance/procs), [delta](https://github.com/dandavison/delta), [atuin](https://github.com/atuinsh/atuin), [tealdeer](https://github.com/tealdeer-rs/tealdeer)
+- `flock` from util-linux (used to serialize memory-heavy Cargo link steps)
 - [JetBrainsMono Nerd Font](https://www.nerdfonts.com/)
 
 ## Usage

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_LINKER="${CARGO_LINKER_REAL:-/usr/bin/cc}"
+HEARTBEAT_SECONDS="${CARGO_LINK_HEARTBEAT_SECONDS:-30}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+LOCK_FILE="$RUNTIME_DIR/cargo-link-$UID.lock"
+LOCK_FD=197
+
+status() {
+  local message="$1"
+  local status_fd="${CARGO_LINK_STATUS_FD:-}"
+
+  if [[ "$status_fd" =~ ^[0-9]+$ && -e "/proc/self/fd/$status_fd" ]]; then
+    printf '%s\n' "$message" >&"$status_fd" || true
+  fi
+}
+
+if [[ ! "$HEARTBEAT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  HEARTBEAT_SECONDS=30
+fi
+
+if [[ ! -x "$REAL_LINKER" ]]; then
+  printf 'cargo-link: real linker is not executable: %s\n' "$REAL_LINKER" >&2
+  exit 127
+fi
+
+if ! command -v flock >/dev/null 2>&1; then
+  status 'cargo-link: flock is unavailable; linking without the global concurrency limit'
+  exec "$REAL_LINKER" "$@"
+fi
+
+exec 197>"$LOCK_FILE"
+
+if ! flock -n "$LOCK_FD"; then
+  status 'cargo-link: waiting for the global linker slot; another build is linking - do not cancel or retry'
+
+  while ! flock -w "$HEARTBEAT_SECONDS" "$LOCK_FD"; do
+    status 'cargo-link: still waiting for the global linker slot; the build is healthy - do not cancel or retry'
+  done
+
+  status 'cargo-link: global linker slot acquired; linking now'
+fi
+
+# Keep LOCK_FD open across cc and rust-lld. The kernel releases it when the
+# linker process exits, including on failure or cancellation.
+exec "$REAL_LINKER" "$@"
